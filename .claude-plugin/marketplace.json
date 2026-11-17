@@ -1,0 +1,17 @@
+{
+  "name": "unmaze-marketplace",
+  "owner": {
+    "name": "Tigran Atayan",
+    "url": "https://github.com/t10ko"
+  },
+  "metadata": {
+    "description": "Guided step-by-step PR review artifacts in human reading order."
+  },
+  "plugins": [
+    {
+      "name": "unmaze",
+      "description": "Turn sprawling AI-generated PRs into a shareable, step-by-step code review artifact ordered how humans actually understand code.",
+      "source": "./"
+    }
+  ]
+}

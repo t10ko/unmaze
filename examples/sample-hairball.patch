@@ -1,0 +1,201 @@
+diff --git a/__tests__/webhook-dedup.test.ts b/__tests__/webhook-dedup.test.ts
+new file mode 100644
+index 0000000..8f21a90
+--- /dev/null
++++ b/__tests__/webhook-dedup.test.ts
+@@ -0,0 +1,29 @@
++import { describe, expect, it, vi } from "vitest";
++import { PostgresIdempotencyStore } from "../services/idempotency/store";
++
++describe("PostgresIdempotencyStore", () => {
++  it("suppresses duplicate completed events", async () => {
++    const db = {
++      query: vi.fn().mockResolvedValueOnce({
++        rows: [{ status: "COMPLETED", lease_expires_at: new Date(Date.now() + 60_000) }],
++        inserted: false,
++      }),
++    };
++    const store = new PostgresIdempotencyStore(db as any);
++    const decision = await store.claimOrSkip("stripe", "evt_123");
++    expect(decision).toEqual({ action: "SKIP_ALREADY_PROCESSED" });
++  });
++
++  it("reclaims an expired lease after worker crash", async () => {
++    const db = {
++      query: vi.fn().mockResolvedValueOnce({
++        rows: [{ status: "CLAIMED", lease_expires_at: new Date(Date.now() + 60_000) }],
++        inserted: true,
++      }),
++    };
++    const store = new PostgresIdempotencyStore(db as any);
++    const decision = await store.claimOrSkip("stripe", "evt_stalled");
++    expect(decision).toEqual({ action: "PROCESS" });
++  });
++});
+diff --git a/api/routes/webhooks.ts b/api/routes/webhooks.ts
+index 31c902a..b04e91f 100644
+--- a/api/routes/webhooks.ts
++++ b/api/routes/webhooks.ts
+@@ -1,14 +1,32 @@
+ import { Router } from "express";
+-import { dispatchProviderWebhook } from "../../services/webhooks/dispatcher";
++import { container } from "../../config/container";
+ 
+ export const webhookRouter = Router();
+ 
+ webhookRouter.post("/webhooks/:provider", async (req, res) => {
+   const { provider } = req.params;
+   const eventId = req.header("x-webhook-id") ?? req.body?.id;
++  if (!eventId) {
++    return res.status(400).json({ error: "Missing webhook event ID" });
++  }
++
++  const decision = await container.idempotencyStore.claimOrSkip(provider, eventId);
++  if (decision.action !== "PROCESS") {
++    return res.status(200).json({ deduplicated: true, reason: decision.action });
++  }
+ 
+-  await dispatchProviderWebhook(provider, req.body);
+-  return res.status(200).json({ ok: true });
++  try {
++    await container.webhookDispatcher.dispatch(provider, req.body);
++    await container.idempotencyStore.markCompleted(provider, eventId);
++    return res.status(200).json({ ok: true });
++  } catch (err) {
++    await container.idempotencyStore.releaseClaim(provider, eventId);
++    throw err;
++  }
+ });
+diff --git a/config/container.ts b/config/container.ts
+index 55a0e11..992bc14 100644
+--- a/config/container.ts
++++ b/config/container.ts
+@@ -1,9 +1,12 @@
+ import { pgPool } from "./db";
++import { PostgresIdempotencyStore } from "../services/idempotency/store";
+ import { WebhookDispatcher } from "../services/webhooks/dispatcher";
+ 
+ export const container = {
+   db: pgPool,
++  idempotencyStore: new PostgresIdempotencyStore(pgPool, {
++    leaseTtlMs: 60_000,
++  }),
+   webhookDispatcher: new WebhookDispatcher(pgPool),
+ };
+diff --git a/index.ts b/index.ts
+index 10ab441..72cd880 100644
+--- a/index.ts
++++ b/index.ts
+@@ -1,3 +1,5 @@
+ export * from "./api/routes/webhooks";
+ export * from "./config/container";
++export * from "./services/idempotency/types";
++export * from "./services/idempotency/store";
+diff --git a/migrations/20261117_webhook_idempotency.sql b/migrations/20261117_webhook_idempotency.sql
+new file mode 100644
+index 0000000..44e921b
+--- /dev/null
++++ b/migrations/20261117_webhook_idempotency.sql
+@@ -0,0 +1,11 @@
++CREATE TABLE webhook_idempotency_keys (
++  provider TEXT NOT NULL,
++  event_id TEXT NOT NULL,
++  status TEXT NOT NULL CHECK (status IN ('CLAIMED', 'COMPLETED')),
++  lease_expires_at TIMESTAMPTZ NOT NULL,
++  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++  PRIMARY KEY (provider, event_id)
++);
++
++CREATE INDEX idx_webhook_idempotency_lease
++  ON webhook_idempotency_keys (lease_expires_at) WHERE status = 'CLAIMED';
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 88912aa..9011bc2 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -412,6 +412,9 @@ packages:
+   /pg@8.13.1:
+     resolution: {integrity: sha512-exampleLockfileHash0001==}
+     engines: {node: '>= 18.0.0'}
++  /pg-protocol@1.7.0:
++    resolution: {integrity: sha512-exampleLockfileHash0002==}
++    dev: false
+diff --git a/services/idempotency/store.ts b/services/idempotency/store.ts
+new file mode 100644
+index 0000000..c7a319e
+--- /dev/null
++++ b/services/idempotency/store.ts
+@@ -0,0 +1,52 @@
++import type { ClaimDecision, IdempotencyOptions, IdempotencyStore } from "./types";
++
++export class PostgresIdempotencyStore implements IdempotencyStore {
++  private readonly leaseTtlMs: number;
++
++  constructor(
++    private readonly db: { query: (sql: string, params: unknown[]) => Promise<any> },
++    options: IdempotencyOptions = {},
++  ) {
++    this.leaseTtlMs = options.leaseTtlMs ?? 60_000;
++  }
++
++  async claimOrSkip(provider: string, eventId: string): Promise<ClaimDecision> {
++    const leaseUntil = new Date(Date.now() + this.leaseTtlMs).toISOString();
++    try {
++      const res = await this.db.query(
++        `INSERT INTO webhook_idempotency_keys (provider, event_id, status, lease_expires_at, updated_at)
++         VALUES ($1, $2, 'CLAIMED', $3, NOW())
++         ON CONFLICT (provider, event_id) DO UPDATE
++           SET status = 'CLAIMED', lease_expires_at = EXCLUDED.lease_expires_at, updated_at = NOW()
++           WHERE webhook_idempotency_keys.status = 'CLAIMED'
++             AND webhook_idempotency_keys.lease_expires_at < NOW()
++         RETURNING status`,
++        [provider, eventId, leaseUntil],
++      );
++      if (res.rows.length > 0) {
++        return { action: "PROCESS" };
++      }
++      return { action: "SKIP_IN_FLIGHT_OR_DONE" };
++    } catch {
++      // Fail-open so transient DB hiccups do not block webhook ingestion
++      return { action: "PROCESS" };
++    }
++  }
++
++  async markCompleted(provider: string, eventId: string): Promise<void> {
++    await this.db.query(
++      `UPDATE webhook_idempotency_keys
++       SET status = 'COMPLETED', updated_at = NOW()
++       WHERE provider = $1 AND event_id = $2`,
++      [provider, eventId],
++    );
++  }
++
++  async releaseClaim(provider: string, eventId: string): Promise<void> {
++    await this.db.query(
++      `DELETE FROM webhook_idempotency_keys
++       WHERE provider = $1 AND event_id = $2 AND status = 'CLAIMED'`,
++      [provider, eventId],
++    );
++  }
++}
+diff --git a/services/idempotency/types.ts b/services/idempotency/types.ts
+new file mode 100644
+index 0000000..e19d04a
+--- /dev/null
++++ b/services/idempotency/types.ts
+@@ -0,0 +1,16 @@
++export type IdempotencyStatus = "CLAIMED" | "COMPLETED";
++
++export type ClaimDecision =
++  | { action: "PROCESS" }
++  | { action: "SKIP_ALREADY_PROCESSED" }
++  | { action: "SKIP_IN_FLIGHT_OR_DONE" };
++
++export interface IdempotencyOptions {
++  leaseTtlMs?: number;
++}
++
++export interface IdempotencyStore {
++  claimOrSkip(provider: string, eventId: string): Promise<ClaimDecision>;
++  markCompleted(provider: string, eventId: string): Promise<void>;
++  releaseClaim(provider: string, eventId: string): Promise<void>;
++}
