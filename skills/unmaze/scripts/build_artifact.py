@@ -445,11 +445,13 @@ def build_file_timeline_tokens(
 ) -> list[dict[str, Any]]:
     """Build a unified ordered token stream representing a file's entire evolution across steps."""
     post_lines: list[str] | None = file_obj.get("post_lines")
+    is_added_file = file_obj.get("status") == "added"
     tokens: list[dict[str, Any]] = []
 
     if post_lines and all(not h["is_synthetic"] for h in file_hunks):
         sorted_hunks = sorted(file_hunks, key=lambda h: (h["new_start"], h["old_start"]))
         post_cursor = 1
+        old_cursor = 1
         total_post = len(post_lines)
 
         for h in sorted_hunks:
@@ -463,13 +465,25 @@ def build_file_timeline_tokens(
                         "hunk_id": None,
                         "row_idx": None,
                         "step_order": 0,
+                        "pr_old_line": None if is_added_file else old_cursor,
+                        "pr_new_line": post_cursor,
                     }
                 )
                 post_cursor += 1
+                old_cursor += 1
+
+            if not is_added_file and int(h.get("old_start") or 0) > 0:
+                old_cursor = int(h["old_start"])
 
             for r_idx, ln in enumerate(h["lines"]):
                 kind = ln["kind"]
                 if kind == "ctx":
+                    pr_ol = (
+                        int(ln["old_line"])
+                        if ln.get("old_line") is not None
+                        else (None if is_added_file else old_cursor)
+                    )
+                    pr_nl = int(ln["new_line"]) if ln.get("new_line") is not None else post_cursor
                     tokens.append(
                         {
                             "type": "unchanged",
@@ -477,13 +491,15 @@ def build_file_timeline_tokens(
                             "hunk_id": hid,
                             "row_idx": r_idx,
                             "step_order": 0,
+                            "pr_old_line": pr_ol,
+                            "pr_new_line": pr_nl,
                         }
                     )
-                    if ln.get("new_line") is not None:
-                        post_cursor = int(ln["new_line"]) + 1
-                    else:
-                        post_cursor += 1
+                    if pr_ol is not None:
+                        old_cursor = pr_ol + 1
+                    post_cursor = pr_nl + 1
                 elif kind == "del":
+                    pr_ol = int(ln["old_line"]) if ln.get("old_line") is not None else old_cursor
                     tokens.append(
                         {
                             "type": "del",
@@ -491,9 +507,13 @@ def build_file_timeline_tokens(
                             "hunk_id": hid,
                             "row_idx": r_idx,
                             "step_order": row_step_order.get((hid, r_idx), 1),
+                            "pr_old_line": pr_ol,
+                            "pr_new_line": None,
                         }
                     )
+                    old_cursor = pr_ol + 1
                 elif kind == "add":
+                    pr_nl = int(ln["new_line"]) if ln.get("new_line") is not None else post_cursor
                     tokens.append(
                         {
                             "type": "add",
@@ -501,12 +521,11 @@ def build_file_timeline_tokens(
                             "hunk_id": hid,
                             "row_idx": r_idx,
                             "step_order": row_step_order.get((hid, r_idx), 1),
+                            "pr_old_line": None,
+                            "pr_new_line": pr_nl,
                         }
                     )
-                    if ln.get("new_line") is not None:
-                        post_cursor = int(ln["new_line"]) + 1
-                    else:
-                        post_cursor += 1
+                    post_cursor = pr_nl + 1
 
         while post_cursor <= total_post:
             tokens.append(
@@ -516,9 +535,12 @@ def build_file_timeline_tokens(
                     "hunk_id": None,
                     "row_idx": None,
                     "step_order": 0,
+                    "pr_old_line": None if is_added_file else old_cursor,
+                    "pr_new_line": post_cursor,
                 }
             )
             post_cursor += 1
+            old_cursor += 1
         return tokens
 
     # Fallback when full post_lines are unavailable (deleted files, synthetic files, or partial patches)
@@ -546,6 +568,8 @@ def build_file_timeline_tokens(
                         "step_order": 0,
                         "fallback_old": ln.get("old_line"),
                         "fallback_new": ln.get("new_line"),
+                        "pr_old_line": ln.get("old_line"),
+                        "pr_new_line": ln.get("new_line"),
                     }
                 )
             elif kind == "del":
@@ -557,6 +581,8 @@ def build_file_timeline_tokens(
                         "row_idx": r_idx,
                         "step_order": row_step_order.get((hid, r_idx), 1),
                         "fallback_old": ln.get("old_line"),
+                        "pr_old_line": ln.get("old_line"),
+                        "pr_new_line": None,
                     }
                 )
             elif kind == "add":
@@ -568,6 +594,8 @@ def build_file_timeline_tokens(
                         "row_idx": r_idx,
                         "step_order": row_step_order.get((hid, r_idx), 1),
                         "fallback_new": ln.get("new_line"),
+                        "pr_old_line": None,
+                        "pr_new_line": ln.get("new_line"),
                     }
                 )
             else:
@@ -639,6 +667,8 @@ def evaluate_file_at_step(
                     "kind": "ctx",
                     "old_line": ol,
                     "new_line": nl,
+                    "pr_old_line": tok.get("pr_old_line"),
+                    "pr_new_line": tok.get("pr_new_line"),
                     "content": tok["content"],
                     "active": False,
                 }
@@ -656,6 +686,8 @@ def evaluate_file_at_step(
                         "kind": "ctx",
                         "old_line": ol,
                         "new_line": nl,
+                        "pr_old_line": tok.get("pr_old_line"),
+                        "pr_new_line": tok.get("pr_new_line"),
                         "content": tok["content"],
                         "active": False,
                         "from_earlier_step": True,
@@ -671,6 +703,8 @@ def evaluate_file_at_step(
                             "kind": "add",
                             "old_line": None,
                             "new_line": nl,
+                            "pr_old_line": tok.get("pr_old_line"),
+                            "pr_new_line": tok.get("pr_new_line"),
                             "content": tok["content"],
                             "active": True,
                         }
@@ -682,6 +716,8 @@ def evaluate_file_at_step(
                             "kind": "ctx",
                             "old_line": prev_ln if has_full_file else None,
                             "new_line": nl,
+                            "pr_old_line": tok.get("pr_old_line"),
+                            "pr_new_line": tok.get("pr_new_line"),
                             "content": tok["content"],
                             "active": False,
                         }
@@ -703,6 +739,8 @@ def evaluate_file_at_step(
                             "kind": "del",
                             "old_line": ol,
                             "new_line": None,
+                            "pr_old_line": tok.get("pr_old_line"),
+                            "pr_new_line": tok.get("pr_new_line"),
                             "content": tok["content"],
                             "active": True,
                         }
@@ -717,6 +755,8 @@ def evaluate_file_at_step(
                         "kind": "ctx",
                         "old_line": ol,
                         "new_line": nl,
+                        "pr_old_line": tok.get("pr_old_line"),
+                        "pr_new_line": tok.get("pr_new_line"),
                         "content": tok["content"],
                         "active": False,
                     }
@@ -1686,11 +1726,50 @@ def render_scope_popover_html(surfaces_tree: list[dict[str, Any]]) -> str:
 # HTML Rendering (Timeline Cards, Formatted Blocks, Concept Modals, Arc Sidebar)
 # ---------------------------------------------------------------------------
 
+def compute_row_pr_url(
+    raw_deep_url: str | None,
+    *,
+    pr_old_line: int | None,
+    pr_new_line: int | None,
+    prefer_side: str = "auto",
+) -> str | None:
+    """Build an exact single-line PR/MR/blob deep link (`#diff-<sha256>R<new>` or `L<old>`)."""
+    deep_url = safe_http_url(raw_deep_url)
+    if not deep_url:
+        return None
+
+    m_gh = re.match(r"^(https?://[^#]+#diff-[0-9a-f]{64})", deep_url)
+    if m_gh:
+        base = m_gh.group(1)
+        if prefer_side == "left" and pr_old_line is not None:
+            return f"{base}L{pr_old_line}"
+        if pr_new_line is not None:
+            return f"{base}R{pr_new_line}"
+        if pr_old_line is not None:
+            return f"{base}L{pr_old_line}"
+        return None
+
+    m_gl = re.match(r"^(https?://[^#]+/diffs#[0-9a-f]{40})", deep_url)
+    if m_gl and (pr_new_line is not None or pr_old_line is not None):
+        ol = pr_old_line if pr_old_line is not None else pr_new_line
+        nl = pr_new_line if pr_new_line is not None else pr_old_line
+        return f"{m_gl.group(1)}_{ol}_{nl}"
+
+    if "/blob/" in deep_url and pr_new_line is not None:
+        blob_base = deep_url.split("#", 1)[0]
+        return f"{blob_base}#L{pr_new_line}"
+
+    return None
+
+
 def render_code_row_html(
     *,
     cls: str,
     old_line: int | None,
     new_line: int | None,
+    pr_old_line: int | None = None,
+    pr_new_line: int | None = None,
+    raw_deep_url: str | None = None,
     sig: str,
     content: str,
     lang: str,
@@ -1700,13 +1779,56 @@ def render_code_row_html(
     old_s = str(old_line) if old_line is not None else ""
     new_s = str(new_line) if new_line is not None else ""
     highlighted = highlight_code_line(content, lang)
+
+    eff_pr_old = pr_old_line if pr_old_line is not None else old_line
+    eff_pr_new = pr_new_line if pr_new_line is not None else new_line
+
+    old_url = (
+        compute_row_pr_url(raw_deep_url, pr_old_line=eff_pr_old, pr_new_line=None, prefer_side="left")
+        if old_line is not None and eff_pr_old is not None
+        else None
+    )
+    new_url = (
+        compute_row_pr_url(raw_deep_url, pr_old_line=None, pr_new_line=eff_pr_new, prefer_side="right")
+        if new_line is not None and eff_pr_new is not None
+        else None
+    )
+    primary_url = new_url or old_url or compute_row_pr_url(
+        raw_deep_url, pr_old_line=eff_pr_old, pr_new_line=eff_pr_new
+    )
+    target_ln_lbl = (
+        f"line {eff_pr_new}"
+        if eff_pr_new is not None
+        else (f"deleted line {eff_pr_old}" if eff_pr_old is not None else "line")
+    )
+
+    old_cell = (
+        f'<a class="ln ln-link" href="{esc(old_url)}" target="_blank" rel="noopener noreferrer" '
+        f'title="Open base line {eff_pr_old} in PR ↗">{esc(old_s)}</a>'
+        if old_url
+        else f'<span class="ln" aria-hidden="true">{esc(old_s)}</span>'
+    )
+    new_cell = (
+        f'<a class="ln ln-link" href="{esc(new_url)}" target="_blank" rel="noopener noreferrer" '
+        f'title="Open line {eff_pr_new} in PR ↗">{esc(new_s)}</a>'
+        if new_url
+        else f'<span class="ln" aria-hidden="true">{esc(new_s)}</span>'
+    )
+    hover_jump_html = (
+        f'<a class="row-pr-jump" href="{esc(primary_url)}" target="_blank" rel="noopener noreferrer" '
+        f'title="Jump to {esc(target_ln_lbl)} in GitHub PR to comment ↗">PR ↗</a>'
+        if primary_url
+        else ""
+    )
+
     return (
         f'<span class="dl {cls}"{extra_attrs}>'
-        f'<span class="ln" aria-hidden="true">{esc(old_s)}</span>'
-        f'<span class="ln" aria-hidden="true">{esc(new_s)}</span>'
+        f"{old_cell}"
+        f"{new_cell}"
         f'<span class="sig" aria-hidden="true">{sig}</span>'
         f'<span class="code-txt">{highlighted}</span>'
         f"{trailing_html}"
+        f"{hover_jump_html}"
         f"</span>"
     )
 
@@ -1856,6 +1978,9 @@ def render_timeline_slice_card_html(
                 cls="dl-exp",
                 old_line=row.get("old_line"),
                 new_line=row.get("new_line"),
+                pr_old_line=row.get("pr_old_line"),
+                pr_new_line=row.get("pr_new_line"),
+                raw_deep_url=deep_url,
                 sig=" ",
                 content=row.get("content", ""),
                 lang=lang,
@@ -1873,6 +1998,9 @@ def render_timeline_slice_card_html(
                 cls="dl-exp",
                 old_line=row.get("old_line"),
                 new_line=row.get("new_line"),
+                pr_old_line=row.get("pr_old_line"),
+                pr_new_line=row.get("pr_new_line"),
+                raw_deep_url=deep_url,
                 sig=" ",
                 content=row.get("content", ""),
                 lang=lang,
@@ -1901,12 +2029,19 @@ def render_timeline_slice_card_html(
         seq_idx = len(resolved_highlights)
         num_sym = CIRCLED_NUMERALS[seq_idx] if seq_idx < len(CIRCLED_NUMERALS) else f"#{seq_idx + 1}"
         hl_uid = f"{card_uid}-hl{seq_idx + 1}"
+        start_row = main_window[matched_m_idxs[0]]
+        hl_pr_url = compute_row_pr_url(
+            deep_url,
+            pr_old_line=start_row.get("pr_old_line"),
+            pr_new_line=start_row.get("pr_new_line"),
+        )
         hl_entry = {
             "uid": hl_uid,
             "num": num_sym,
             "title": raw_hl["title"],
             "explanation": raw_hl["explanation"],
             "lines_raw": raw_hl["lines_raw"],
+            "pr_url": hl_pr_url,
             "start_m_idx": matched_m_idxs[0],
             "end_m_idx": matched_m_idxs[-1],
         }
@@ -1944,6 +2079,9 @@ def render_timeline_slice_card_html(
                 cls=cls,
                 old_line=ln.get("old_line"),
                 new_line=ln.get("new_line"),
+                pr_old_line=ln.get("pr_old_line"),
+                pr_new_line=ln.get("pr_new_line"),
+                raw_deep_url=deep_url if kind != "meta" else None,
                 sig=sig,
                 content=ln.get("content", ""),
                 lang=lang if kind != "meta" else "plain",
@@ -1959,6 +2097,9 @@ def render_timeline_slice_card_html(
                 cls="dl-add" if r.get("active") and r["kind"] == "add" else "dl-ctx",
                 old_line=None,
                 new_line=r.get("new_line"),
+                pr_old_line=r.get("pr_old_line"),
+                pr_new_line=r.get("pr_new_line"),
+                raw_deep_url=deep_url if r["kind"] != "meta" else None,
                 sig="+" if (r.get("active") and r["kind"] == "add") else " ",
                 content=r.get("content", ""),
                 lang=lang if r["kind"] != "meta" else "plain",
@@ -2012,13 +2153,20 @@ def render_timeline_slice_card_html(
                 if total_hl > 1
                 else ""
             )
+            hl_lines_badge = (
+                f'<a class="hl-note-lines hl-note-pr-link" href="{esc(hl_entry["pr_url"])}" '
+                f'target="_blank" rel="noopener noreferrer" title="Open L{esc(hl_entry["lines_raw"])} in GitHub PR ↗">'
+                f'L{esc(hl_entry["lines_raw"])} ↗</a>'
+                if hl_entry.get("pr_url")
+                else f'<code class="hl-note-lines">L{esc(hl_entry["lines_raw"])}</code>'
+            )
             hl_cards.append(
                 f'<div class="hl-note-card" id="hl-note-{esc(hl_entry["uid"])}" data-hl-note="{esc(hl_entry["uid"])}" hidden>'
                 f'<div class="hl-note-head">'
                 f'<div class="hl-note-heading">'
                 f'<span class="hl-note-num" aria-hidden="true">{esc(hl_entry["num"])}</span>'
                 f'<strong>{esc(hl_entry["title"])}</strong>'
-                f'<code class="hl-note-lines">L{esc(hl_entry["lines_raw"])}</code>'
+                f"{hl_lines_badge}"
                 f"</div>"
                 f'<button type="button" class="hl-close-btn" data-hl-close="{esc(hl_entry["uid"])}" aria-label="Close block explanation">×</button>'
                 f"</div>"
@@ -4434,10 +4582,22 @@ def build_html_artifact(
 
     .hl-note-lines {{
       font-size: 0.69rem;
-      padding: 0.05rem 0.32rem;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      padding: 0.05rem 0.34rem;
       border-radius: 4px;
       background: var(--subtle);
       color: var(--muted);
+      text-decoration: none;
+    }}
+
+    .hl-note-pr-link {{
+      color: var(--accent);
+      background: var(--accent-soft);
+      font-weight: 620;
+    }}
+
+    .hl-note-pr-link:hover {{
+      text-decoration: underline;
     }}
 
     .hl-close-btn {{
@@ -4482,7 +4642,56 @@ def build_html_artifact(
       user-select: none;
       flex-shrink: 0;
       font-size: 0.74rem;
-      opacity: 0.7;
+      opacity: 0.72;
+      text-decoration: none;
+    }}
+
+    .ln-link {{
+      cursor: pointer;
+    }}
+
+    .dl:hover .ln-link {{
+      color: var(--accent);
+      opacity: 0.95;
+    }}
+
+    .ln-link:hover,
+    .ln-link:focus-visible {{
+      color: var(--accent);
+      opacity: 1;
+      font-weight: 650;
+      text-decoration: underline;
+    }}
+
+    .row-pr-jump {{
+      margin-left: auto;
+      position: sticky;
+      right: 0.45rem;
+      flex-shrink: 0;
+      padding: 0.04rem 0.38rem;
+      border-radius: 4px;
+      border: 1px solid var(--accent);
+      background: var(--surface);
+      color: var(--accent);
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 0.66rem;
+      font-weight: 650;
+      line-height: 1.35;
+      text-decoration: none;
+      white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+    }}
+
+    .dl:hover .row-pr-jump,
+    .dl:focus-within .row-pr-jump {{
+      opacity: 1;
+      pointer-events: auto;
+    }}
+
+    .row-pr-jump:hover {{
+      background: var(--accent);
+      color: var(--surface);
     }}
 
     .sig {{ inline-size: 1.05rem; user-select: none; flex-shrink: 0; font-weight: 700; }}

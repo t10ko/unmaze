@@ -580,6 +580,42 @@ class UnmazeTestSuite(unittest.TestCase):
             self.assertTrue(updated_plan["concept_sweep_completed"])
             self.assertEqual(len(updated_plan["concepts"]), 1)
 
+    def test_per_line_github_pr_deep_links_across_timeline_slices_and_deletions(self) -> None:
+        manifest = self._build_sample_manifest()
+        validated = build_artifact.validate_and_normalize_plan(
+            manifest, copy.deepcopy(self.sample_plan), search_dirs=[REPO_ROOT / "examples"]
+        )
+        rendered = build_artifact.build_html_artifact(
+            manifest, validated, search_dirs=[REPO_ROOT / "examples"]
+        )
+
+        store_sha = hashlib.sha256(b"services/idempotency/store.ts").hexdigest()
+        webhooks_sha = hashlib.sha256(b"api/routes/webhooks.ts").hexdigest()
+
+        # 1. In Step 2 (`H007:1-34,52`), closing `}` displays step line `35`, yet links to TRUE GitHub PR line `R52`!
+        step2_sec = rendered.split('id="step-2"', 1)[1].split("</section>", 1)[0]
+        self.assertIn(
+            f'href="https://github.com/acme/payments/pull/142/files#diff-{store_sha}R52" '
+            f'target="_blank" rel="noopener noreferrer" title="Open line 52 in PR ↗">35</a>',
+            step2_sec,
+        )
+        # Highlight explanation card badge (`L14-29 ↗`) also links straight to `R14`
+        self.assertIn(
+            f'class="hl-note-lines hl-note-pr-link" href="https://github.com/acme/payments/pull/142/files#diff-{store_sha}R14"',
+            step2_sec,
+        )
+
+        # 2. In Step 4 (`api/routes/webhooks.ts`), deleted old line 21 links to `L21`, and added new line 30 links to `R30`!
+        step4_sec = rendered.split('id="step-4"', 1)[1].split("</section>", 1)[0]
+        self.assertIn(
+            f'class="row-pr-jump" href="https://github.com/acme/payments/pull/142/files#diff-{webhooks_sha}L21"',
+            step4_sec,
+        )
+        self.assertIn(
+            f'class="row-pr-jump" href="https://github.com/acme/payments/pull/142/files#diff-{webhooks_sha}R30"',
+            step4_sec,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

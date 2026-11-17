@@ -33,7 +33,7 @@ GitHub still dumps changed files in **alphabetical order (`A → Z`)**:
 ![Annotated Figma/UI screenshots, mixed red/green diff-block explanations, and expandable context](assets/demo-visuals-context.gif)
 
 - **Red-marked screenshots—even on backend PRs:** Traces backend, API, and DB changes to the frontend screen they impact and posts screenshots or Figma frames with **red circles, boxes, and arrows** explaining what the code is actually for (enforced at build time).
-- **Expand surrounding lines inline:** Click `↑ Show lines above` / `↓ Show lines below` (`Show less`) or `File at this step` without leaving the guide, and click `PR ↗` to jump to that exact line on GitHub to leave a comment.
+- **Expand context & one-click exact-line PR jump:** Click `↑ Show lines above` / `↓ Show lines below` (`Show less`) or `File at this step` inline—and click **any line number or row `PR ↗` hover badge** to open GitHub scrolled straight to that exact line (`#diff-...R<line>` or `L<line>`) to leave a comment.
 - **100% of the diff accounted for:** A deterministic Python check verifies every single changed line from `git diff` is included—nothing can be silently skipped or altered by the AI.
 - **One-click team sharing:** Publishes directly via Claude Code's `Artifact` tool (`claude.ai/code/artifact/...`) and also saves local `.html` and `.md` copies.
 
