@@ -1072,9 +1072,24 @@ def validate_and_normalize_plan(
     if not isinstance(overview, dict):
         errors.append("`overview` object is required in plan.json.")
         overview = {}
-    for req_field in ("tldr", "before_state", "after_state"):
+    whole_task = str(overview.get("whole_task") or overview.get("tldr") or "").strip()
+    if not whole_task:
+        errors.append(
+            "`overview.whole_task` (or `overview.tldr`) must be a non-empty string explaining the whole task."
+        )
+    overview["whole_task"] = whole_task
+    overview["tldr"] = whole_task
+    for req_field in ("before_state", "after_state"):
         if not str(overview.get(req_field, "")).strip():
             errors.append(f"`overview.{req_field}` must be a non-empty string.")
+    this_pr_part_raw = overview.get("this_pr_part")
+    if this_pr_part_raw is None:
+        this_pr_part_raw = overview.get("pr_part") or overview.get("this_pr_scope")
+    if this_pr_part_raw is not None and not isinstance(this_pr_part_raw, str):
+        errors.append("`overview.this_pr_part` must be a string when provided.")
+    overview["this_pr_part"] = (
+        str(this_pr_part_raw).strip() if isinstance(this_pr_part_raw, str) else ""
+    )
     total_annotated_visuals = _validate_visuals_list(
         overview.get("visuals"), "overview", errors, search_dirs=search_dirs
     )
@@ -2358,6 +2373,15 @@ def build_html_artifact(
         concept_lookup=concept_lookup,
         eager=True,
     )
+    this_pr_part = str(overview.get("this_pr_part") or "").strip()
+    this_pr_part_html = (
+        f'<div class="pr-part-card">'
+        f'<span class="pr-part-badge">What we built in this PR</span>'
+        f"<p>{fmt_prose(this_pr_part, concept_lookup)}</p>"
+        f"</div>"
+        if this_pr_part
+        else ""
+    )
 
     concepts_bar_html = ""
     if concepts:
@@ -2368,7 +2392,7 @@ def build_html_artifact(
         )
         concepts_bar_html = (
             f'<div class="concepts-Primer-box">'
-            f'<span class="ba-label">New to this codebase? Click any concept for a 20-second primer:</span>'
+            f'<span class="ba-label">New to this part of the codebase? Click any chip for a quick rundown:</span>'
             f'<div class="concept-chip-row">{c_btns}</div></div>'
         )
 
@@ -2386,7 +2410,7 @@ def build_html_artifact(
             )
         chapters_preview_html = (
             f'<div class="table-wrap"><table class="mod-table">'
-            f"<thead><tr><th scope=\"col\">Chapter</th><th scope=\"col\">What It Delivers</th></tr></thead>"
+            f'<thead><tr><th scope="col">Chapter</th><th scope="col">What We Do Here</th></tr></thead>'
             f'<tbody>{"".join(ch_rows)}</tbody></table></div>'
         )
 
@@ -2401,11 +2425,10 @@ def build_html_artifact(
       <div class="step-card">
         <p class="eyebrow">Overview · {stats['total_files']} files (+{stats['total_additions']} / −{stats['total_deletions']})</p>
         <h2 id="heading-overview" class="step-title">The Big Picture</h2>
-        <p class="lead-text">{fmt_prose(overview['tldr'], concept_lookup)}</p>
+        <p class="lead-text">{fmt_prose(overview['whole_task'], concept_lookup)}</p>
         {global_ctx_p}
-        {flow_html}
-        {concepts_bar_html}
         {overview_visuals_html}
+        {this_pr_part_html}
         <div class="before-after">
           <div class="ba-item">
             <span class="ba-label">Before</span>
@@ -2416,9 +2439,11 @@ def build_html_artifact(
             <p>{fmt_prose(overview['after_state'], concept_lookup)}</p>
           </div>
         </div>
+        {flow_html}
+        {concepts_bar_html}
         {chapters_preview_html}
         <div class="step-footer">
-          <span class="coverage-note">100% of diff accounted across {total_main_steps} steps</span>
+          <span class="coverage-note">Every changed line accounted across {total_main_steps} steps</span>
           <button type="button" id="overview-start-btn" class="nav-btn nav-btn-primary" data-nav-dir="next" data-default-label="{first_btn_label}" data-goto-index="1">
             {first_btn_label}
           </button>
@@ -3698,6 +3723,27 @@ def build_html_artifact(
       grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
       gap: 0.75rem;
       margin-bottom: 0.9rem;
+    }}
+
+    .pr-part-card {{
+      margin: 0 0 0.9rem;
+      padding: 0.72rem 0.9rem;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      border: 1px solid var(--border);
+      border-inline-start: 3px solid var(--accent);
+      font-size: 0.89rem;
+    }}
+
+    .pr-part-card p {{ margin: 0.22rem 0 0; }}
+
+    .pr-part-badge {{
+      display: inline-block;
+      font-size: 0.71rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--accent);
     }}
 
     .ba-item {{
@@ -5243,12 +5289,24 @@ def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> st
     lines: list[str] = [
         f"# {title}",
         "",
-        f"{ov['tldr']}",
-        "",
-        f"- **Before:** {ov['before_state']}",
-        f"- **After:** {ov['after_state']}",
+        f"{ov.get('whole_task') or ov['tldr']}",
         "",
     ]
+    for vis in ov.get("visuals") or []:
+        if isinstance(vis, dict) and (vis.get("src") or vis.get("figma_url")):
+            v_cap = str(vis.get("caption") or vis.get("source_label") or "Big-picture screenshot").strip()
+            v_marks = [str(a.get("label")).strip() for a in (vis.get("annotations") or []) if isinstance(a, dict) and a.get("label")]
+            mark_note = f" (red marks: {', '.join(v_marks)})" if v_marks else ""
+            lines.append(f"- **Visual:** {v_cap}{mark_note}")
+    if ov.get("this_pr_part"):
+        lines.append(f"- **What we built in this PR:** {ov['this_pr_part']}")
+    lines.extend(
+        [
+            f"- **Before:** {ov['before_state']}",
+            f"- **After:** {ov['after_state']}",
+            "",
+        ]
+    )
 
     for idx, st in enumerate(plan["steps"], start=1):
         lyr = VALID_LAYERS[st["layer"]]

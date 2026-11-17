@@ -1,10 +1,15 @@
-# `plan.json` Schema Reference (v0.3)
+# `plan.json` Schema Reference (v0.5)
 
 `build_artifact.py` merges `diff-manifest.json` with `plan.json` to compile the Arc-sidebar review guide, cumulative timeline file states, clickable concept modals, and annotated UI/Figma screenshots.
 
-**Hard invariants enforced by `build_artifact.py` (exit code `2` on violation):**
-1. **100% Changed-Line Coverage:** Every changed (`+`/`−`) line in every hunk (`H001`..`HNNN`) MUST be claimed **exactly once** across `steps[*].hunk_ids` and `mechanical.groups[*].hunk_ids` (using either whole-hunk `"H007"` or line-slice `"H007:1-34,52"` syntax).
-2. **Mandatory Red-Marked Screenshots (Frontend AND Backend PRs):**
+**Hard invariants & core writing rules:**
+1. **Super Casual Teammate Tone Across the Whole Board:** Every text field in `plan.json` (`overview`, `chapters`, `steps`, `points`, `table`, `diff_highlights`, `visuals[*].caption`, `concepts`, `callouts`, `mechanical`) MUST be written **super casually** in short, simple everyday English—like a teammate walking you through the PR on Slack (`we`, `you`, contractions like `we're`, `don't`, `it's`, zero stiff spec prose or AI jargon).
+2. **Big-Picture Overview First (`overview.whole_task` + `overview.visuals` + optional `overview.this_pr_part`):**
+   - `overview.whole_task` (required; `tldr` accepted as alias): 1–2 short, super casual sentences explaining **the whole task** (the big picture, even if it spans multiple PRs).
+   - `overview.visuals`: Put big-picture red-marked screenshot(s) right on `Overview` whenever UI visuals apply so the reviewer immediately sees what the feature looks like.
+   - `overview.this_pr_part` (optional): Include **only** when this PR builds one slice of a bigger task, casually stating what part we built here. Omit completely when this PR implements the whole task!
+3. **100% Changed-Line Coverage (exit code `2` on violation):** Every changed (`+`/`−`) line in every hunk (`H001`..`HNNN`) MUST be claimed **exactly once** across `steps[*].hunk_ids` and `mechanical.groups[*].hunk_ids` (using whole-hunk `"H007"` or line-slice `"H007:1-34,52"` syntax).
+4. **Mandatory Red-Marked Screenshots (Frontend AND Backend PRs, exit code `2` on violation):**
    - Every visual card with `src` MUST exist on disk (or be a valid `data:`/`https:` URL) and MUST include at least one red mark (`circle`, `arrow`, or `box`) inside `annotations[]`.
    - Every `plan.json` MUST attach at least 1 red-marked screenshot across `overview.visuals` or `steps[*].visuals`—even on backend-only PRs whenever a frontend screen consumes or reflects that backend logic.
    - When zero UI consumers exist (e.g., pure CLI/SDK/infra) or no UI/Figma/screenshot is reachable after checking downstream callers, pass top-level `"no_visuals_justification"` (`>= 20` chars) so the build succeeds cleanly (`exit 0`) and omits the screenshot block.
@@ -17,10 +22,22 @@
 {
   "title": "PR #142: Idempotent Webhook Ingestion",
   "overview": {
-    "tldr": "Saves each webhook ID in Postgres before running it so retried Stripe or GitHub callbacks never run twice.",
-    "global_context": "External providers POST signed payloads to `webhookRouter`, which calls `WebhookDispatcher` synchronously.",
-    "before_state": "Every retry ran `WebhookDispatcher` again and could double-charge customers.",
-    "after_state": "`webhookRouter` claims `(provider, event_id)` in `PostgresIdempotencyStore` first and skips duplicates with `200 OK`."
+    "whole_task": "We're making Stripe and GitHub webhooks safe against retries and showing live dedup status in the Payments Admin Console so support can spot skipped duplicates.",
+    "this_pr_part": "This PR ships the backend part: the Postgres lock table and `/webhooks/:provider` guard—the Admin Console retry button comes in the next PR.",
+    "before_state": "If Stripe retried a webhook, we just ran `WebhookDispatcher` again and could double-charge a customer.",
+    "after_state": "Now `webhookRouter` locks `(provider, event_id)` in `PostgresIdempotencyStore` first and replies `200 OK` right away on duplicates.",
+    "visuals": [
+      {
+        "src": "sample-webhook-ui.png",
+        "source_label": "Payments Admin Console (Big Picture)",
+        "figma_url": "https://www.figma.com/design/demo/Spec?node-id=18-204",
+        "caption": "Here's where this shows up in the Admin Console: duplicate retries get a quick `200 deduplicated` badge while active runs hold a 60s lock.",
+        "annotations": [
+          { "kind": "circle", "x": 86.2, "y": 42.7, "rx": 8.2, "ry": 5.8, "label": "200 deduplicated" },
+          { "kind": "arrow", "from_x": 60.0, "from_y": 29.0, "to_x": 77.2, "to_y": 41.0, "label": "decision != PROCESS" }
+        ]
+      }
+    ]
   },
   "architecture_map": {
     "nodes": [
@@ -60,13 +77,13 @@
     {
       "id": "ch-storage",
       "title": "Lease Storage",
-      "summary": "Creates the SQL lease table and atomic claim query.",
+      "summary": "Sets up the SQL lock table and the single-query claim check.",
       "step_ids": ["step-1", "step-2"]
     },
     {
       "id": "ch-guard",
       "title": "Webhook Guard & UI",
-      "summary": "Adds completion/release helpers, wires the HTTP route, and audits tests.",
+      "summary": "Adds finish/undo helpers, hooks them into `/webhooks/:provider`, and checks the tests.",
       "step_ids": ["step-3", "step-4", "step-5"]
     }
   ],
@@ -74,13 +91,13 @@
     {
       "id": "step-1",
       "layer": "contracts",
-      "title": "SQL lease table and store contract",
-      "explanation": "Defines `webhook_idempotency_keys` and the `IdempotencyStore` types before any query logic uses them.",
+      "title": "Lock table and TypeScript types",
+      "explanation": "First we set up the `webhook_idempotency_keys` table and `IdempotencyStore` types that everything else uses.",
       "table": {
-        "headers": ["Status", "Meaning"],
+        "headers": ["Status", "What It Means"],
         "rows": [
-          ["`CLAIMED`", "A worker is currently running this event until `lease_expires_at`."],
-          ["`COMPLETED`", "The event finished and all future retries must skip it."]
+          ["`CLAIMED`", "A worker is running this event right now until `lease_expires_at`."],
+          ["`COMPLETED`", "We already finished this event, so any retry gets skipped."]
         ]
       },
       "hunk_ids": ["H005", "H008"]
@@ -88,30 +105,30 @@
     {
       "id": "step-2",
       "layer": "core",
-      "title": "Atomic claim query with 60s crash recovery",
-      "explanation": "Builds the initial `PostgresIdempotencyStore` with `claimOrSkip()` so only one worker wins a new or expired event.",
+      "title": "Single-query lock with 60s crash recovery",
+      "explanation": "Next we add `claimOrSkip()` on `PostgresIdempotencyStore` so only one worker can grab a new or expired event.",
       "points": [
-        { "anchor": "Conflict rule", "text": "`ON CONFLICT DO UPDATE` only steals an existing row if `status = 'CLAIMED'` and its lease expired." },
-        { "anchor": "Duplicate path", "text": "If Postgres updates zero rows, another worker owns or finished the event, so we skip it." }
+        { "anchor": "Stuck lock takeover", "text": "`ON CONFLICT DO UPDATE` only steals a row if it's still `CLAIMED` and its 60s timer ran out." },
+        { "anchor": "Duplicate skip", "text": "If Postgres updates zero rows, someone else is handling or finished it, so we bail out." }
       ],
       "diff_highlights": [
         {
           "hunk_id": "H007",
           "lines": "14-29",
           "title": "Single-query lease steal",
-          "explanation": "Inserts a 60s `CLAIMED` row, or steals an existing row in the same SQL round-trip only when its lease expired."
+          "explanation": "Grabs a 60s `CLAIMED` lock—or steals an expired one—in one SQL trip so two workers never race."
         },
         {
           "hunk_id": "H007",
           "lines": "30-33",
           "title": "Fail-open DB catch",
-          "explanation": "Returns `PROCESS` if Postgres throws so transient DB hiccups do not block live webhooks."
+          "explanation": "If Postgres hiccups, we return `PROCESS` anyway so a quick DB blip doesn't drop live webhooks."
         }
       ],
       "callouts": [
         {
           "kind": "assumption",
-          "text": "The `catch` block returns `PROCESS` on DB errors (`store.ts` L29)—check whether billing webhooks must fail with `500` instead."
+          "text": "Heads up: `catch` lets the webhook run when Postgres errors (`store.ts` L29)—double-check if billing webhooks should return `500` instead."
         }
       ],
       "hunk_ids": ["H007:1-34,52"]
@@ -119,21 +136,21 @@
     {
       "id": "step-3",
       "layer": "core",
-      "title": "Completion and rollback helpers on the store",
-      "explanation": "Adds `markCompleted()` and `releaseClaim()` onto `PostgresIdempotencyStore` so the HTTP route can finalize or free a lease.",
+      "title": "Finish and undo helpers on the store",
+      "explanation": "Now we add `markCompleted()` and `releaseClaim()` onto `PostgresIdempotencyStore` so the route can close or free a lock.",
       "hunk_ids": ["H007:35-51"]
     },
     {
       "id": "step-4",
       "layer": "wiring",
-      "title": "Protect /webhooks/:provider with the lease guard",
-      "explanation": "Wires `PostgresIdempotencyStore` into the container and wraps `WebhookDispatcher` inside `POST /webhooks/:provider`.",
+      "title": "Hook the lock guard into /webhooks/:provider",
+      "explanation": "Here we plug `PostgresIdempotencyStore` into `webhookRouter` so `WebhookDispatcher` only runs once per event.",
       "visuals": [
         {
           "src": "sample-webhook-ui.png",
           "source_label": "Figma / App UI",
           "figma_url": "https://www.figma.com/design/demo/Spec?node-id=18-204",
-          "caption": "Duplicate retries return `200 deduplicated` on the top right while in-flight events hold a 60s lease.",
+          "caption": "Duplicate retries get a `200 deduplicated` badge on the top right while running events hold a 60s lock.",
           "annotations": [
             { "kind": "circle", "x": 86.2, "y": 42.7, "rx": 8.2, "ry": 5.8, "label": "200 deduplicated" },
             { "kind": "arrow", "from_x": 60.0, "from_y": 29.0, "to_x": 77.2, "to_y": 41.0, "label": "decision != PROCESS" }
@@ -145,10 +162,10 @@
     {
       "id": "step-5",
       "layer": "verification",
-      "title": "Unit tests for duplicate skip and expired lease",
-      "explanation": "Checks duplicate skipping and stalled-lease takeover with a mocked database client.",
+      "title": "Check the dedup unit tests",
+      "explanation": "Finally we check the unit tests covering duplicate skips and expired-lock recovery.",
       "untested_gaps": [
-        "Mocks `db.query`, so the real Postgres `ON CONFLICT` SQL never runs."
+        "Tests mock `db.query`, so our real `ON CONFLICT` SQL never runs against Postgres."
       ],
       "hunk_ids": ["H001"]
     }
@@ -157,7 +174,7 @@
     "groups": [
       {
         "title": "Barrel exports & lockfile",
-        "reason": "Re-exports new files in `index.ts` and updates `pnpm-lock.yaml`.",
+        "reason": "Just re-exports the new files in `index.ts` and updates `pnpm-lock.yaml`.",
         "hunk_ids": ["H004", "H006"]
       }
     ]

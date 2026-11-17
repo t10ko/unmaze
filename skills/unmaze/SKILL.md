@@ -6,19 +6,20 @@ license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.5.0"
+  version: "0.5.1"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
 
 GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at once on reviewers who didn't write the code by hand and may not know how that subsystem works globally. `unmaze` turns any PR or Git diff into a **guided, low-cognitive-load interactive Artifact** with:
 
+- **Big-Picture Overview First** (explains the **whole task** casually in simple, short English with red-marked screenshots up front—and if this PR is only one slice of a bigger effort, clearly says which part we built here),
+- **Super Casual Teammate Voice Everywhere** (written like a teammate walking you through the PR over Slack—contractions, `we`/`you`, zero stiff docs or AI jargon),
 - **Arc-style Chapters** (splitting large PRs into ordered chapters—`Chapter 1`, `Chapter 2`—in a clean sidebar),
 - **Top-Bar Role & Area Tree Filter** (2-level `Role Surface -> App Area` filter that dims unrelated chapters and steps so FE, BE, or domain engineers can review just their slice),
 - **Cumulative Timeline File Evolution** (showing each file *as it exists at that step*, slicing large hunks with `H007:1-34,52` so future steps don't leak early),
 - **Interactive Diff-Block Highlights** (hover-tinted code chunks inside large diffs or new files that open a side-margin explanation on click without covering any code),
 - **Clickable Repo Concept Modals** (explaining any touched module or domain term from scratch for an engineer who is new to the repo),
-- **Dynamic Visual Formatting Rotation** in **very simple English**,
 - **Mandatory Red-Marked Screenshots — Even on Backend PRs** (traces backend/API/DB changes to the frontend screen they impact and places red circles, boxes, and arrows showing what the code is for), and
 - **100% deterministic changed-line accounting**.
 
@@ -56,9 +57,9 @@ Map `$ARGUMENTS` to `<SKILL_DIR>/scripts/parse_diff.py`:
 
 ---
 
-### Step 2: Gather Global Repo Context, Concepts & Red-Marked Screenshots (Mandatory)
+### Step 2: Gather Whole-Task Context, Concepts & Red-Marked Screenshots (Mandatory)
 
-1. Read `$WORK_DIR/hunks-readable.txt` to inspect all hunk IDs (`H001`..`HNNN`), line numbers, and any Figma/screenshot URLs extracted from the PR description.
+1. Read `$WORK_DIR/hunks-readable.txt` (plus PR body, commit messages, or linked ticket hints) to understand **the whole task / bigger picture**—what user or engineering problem the team is solving overall, and whether this PR finishes the whole thing or builds one part of a larger effort.
 2. Perform 2–6 targeted lookups in surrounding repo files so you understand **how the touched subsystem actually works from scratch** (who calls it, whether it runs sync or async, what DB tables/services it owns, and what happens on error). You will use these concrete facts to write **Concept Modals (`concepts[]`)** for reviewers who don't know this codebase!
 3. **Hunt & Capture Impacted UI Screenshots — EVEN FOR 100% BACKEND PRs (Hard Requirement):**
    - **Never skip screenshots just because zero frontend files appear in `git diff`!** Whenever a PR changes an API route, GraphQL/tRPC resolver, DB column, webhook handler, queue job, permission rule, or config flag, **trace its callers/consumers forward across the repo or monorepo** (`Grep` endpoint paths, client SDK methods, DTO fields, or status enums -> UI pages/tables/modals/forms) to find **which frontend screen or user flow eventually uses or displays this work**.
@@ -70,32 +71,41 @@ Map `$ARGUMENTS` to `<SKILL_DIR>/scripts/parse_diff.py`:
 
 ---
 
-### Step 3: Design `plan.json` (Chapters, Timeline Evolution, Concepts & Simple English)
+### Step 3: Design `plan.json` (Big-Picture Overview, Chapters, Timeline & Super Casual Voice)
 
 Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cognitive-order-guide.md`, then write `$WORK_DIR/plan.json`.
 
-#### A. Chapters (`chapters[]`), 2-Level Area Scopes (`file_scopes`), & Zero-Forward-Reference Order
+#### A. Big-Picture Overview (`overview`): Explain the Whole Task First + Screenshots
+- **`overview.whole_task` (Required):** Explain **the whole task**—the big picture of what we're building or fixing overall (even if it spans multiple PRs). Keep it **short (1–2 sentences)**, **super casual**, and in **simple everyday English**.
+- **`overview.visuals` (Big-Picture Screenshots Up Front):** Place at least one **red-marked screenshot** right inside `overview.visuals` whenever UI visuals apply so the reviewer sees what the whole feature looks like on the very first screen—before reading any code!
+- **`overview.this_pr_part` (Optional — only when this PR is part of a bigger task):** If this PR only builds one piece of a larger task/epic, casually state in 1 short sentence **what part we built in this PR** (and what comes separately). **If this PR implements the whole task end-to-end, omit `this_pr_part` completely!**
+- **`overview.before_state` & `overview.after_state`:** 1 short, casual sentence each showing life before vs. after.
+
+#### B. Chapters (`chapters[]`), 2-Level Area Scopes (`file_scopes`), & Zero-Forward-Reference Order
 - For any PR with **4+ steps or 2+ logical concerns**, group `steps` into ordered **`chapters`** (displayed as Arc-style tabs in the left sidebar: `Chapter 1`, `Chapter 2`, `Chapter 3`...), ordered so Chapter 2 builds cleanly on Chapter 1.
 - Inside each chapter, order steps from **`contracts` -> `core` -> `wiring` -> `verification`**, tucking lockfiles/exports into `mechanical` at the end.
 - Define top-level **`file_scopes`** mapping each changed file path to a 2-level `{ "surface": "...", "area": "..." }` pair (`surface` in `"Frontend"`, `"Backend & API"`, `"Database & Contracts"`, `"Tests & QA"`, `"Infra & Config"`; `area` as a clean 2–3 word feature/module part like `"Explore Metric Drawer"` or `"Rule Counts Route"`—**never** an exact filename). This powers the pronounced Top-Bar Area Filter so FE or BE reviewers can isolate their areas in one click.
 
-#### B. Cumulative Timeline File Evolution & Sub-Hunk Slicing (`H007:1-34,52`)
+#### C. Cumulative Timeline File Evolution & Sub-Hunk Slicing (`H007:1-34,52`)
 - `build_artifact.py` reconstructs each file **as it exists at Step $N$**: earlier steps are already merged into the file, Step $N$ glows `+`/`−`, and future steps **do not exist in that file yet**.
 - Whenever a single large hunk or new file mixes multiple stages (e.g., types + core method + later lifecycle helpers, or imports + logic), **slice it by line range** (`"H007:1-34,52"` in Step 2, `"H007:35-51"` in Step 3) so the file evolves cleanly step by step along the timeline!
 - When a single step still contains a **large or dense diff (`>= 20` lines, complex function, tricky SQL, or multi-branch handler)** that belongs together in one view, attach **2–5 `diff_highlights`** (`{"hunk_id": "H007", "lines": "14-29", "title": "...", "explanation": "..."}`) on the non-obvious blocks. Hovering tints that block across green/red/gray lines, and clicking opens a side-margin explanation without covering code. **Do NOT overdo it:** skip short/obvious diffs (`< 20` lines, imports, simple types), and cap at `<= 5` blocks per diff card (`build_artifact.py` rejects `> 5`).
 
-#### C. Project Concept Modals (`concepts[]`)
+#### D. Project Concept Modals (`concepts[]`)
 - Define 3–8 `concepts` for key services, tables, queues, middlewares, or domain terms touched by this PR.
-- Write each concept **from scratch for a capable engineer who has never seen this project before**—plain, concrete engineering facts (owning file, callers, sync vs. async, failure behavior, and how this PR changes or relies on it). **Never** use childish metaphors or fairy-tale analogies.
+- Write each concept **casually from scratch for a capable engineer who has never seen this project before**—plain, concrete engineering facts (owning file, callers, sync vs. async, failure behavior, and how this PR changes or relies on it). **Never** use childish metaphors or fairy-tale analogies.
 - Wrap concept names in backticks (`` `WebhookDispatcher` ``) or `[[concept-id|Label]]` in step text so they automatically become clickable modal links!
 
-#### D. Simple English & Style Formatting Rotation (Mandatory)
-- **Very Simple English:** Keep every sentence short (<= 20 words), one idea per sentence. Use plain everyday verbs (*saves, checks, skips, calls, fails, deletes*)—ban heavy AI words (*orchestrates, leverages, materializes, facilitates, subsequently, aforementioned*).
-- **1-Sentence Invariant & 5-Item Cap:** `explanation` MUST be **1 single plain-English sentence** (BLUF). Cap `points`, `table.rows`, `callouts`, and `untested_gaps` at **<= 5 items**, with <= 1 sentence per item.
-- **Dynamic Visual Modulation (Rotate Containers):** Never write walls of prose. After the 1-sentence `explanation`, pair the diff with the container that fits the step's shape—a compact `table` for state/input->outcome rules, bold-anchored `points` (`{"anchor": "...", "text": "..."}`) for mechanics, `visuals` for UI/Figma screens, and `callouts` only for real risks/assumptions.
+#### E. Keep Everything SUPER Casual + Simple English + Formatting Rotation (VERY IMPORTANT RULE)
+- **Keep Everything Super Casual Across the Whole Board:** Every single piece of writing—`overview`, chapter summaries, step titles, `explanation`, `points`, `table`, `diff_highlights`, screenshot `caption`s, `concepts`, `callouts`, and `mechanical`—**MUST sound like a friendly engineer walking a teammate through the code at their desk or on Slack**.
+  - **Use natural conversational phrasing:** Use `we`, `you`, and natural contractions (`we're`, `don't`, `it's`, `won't`, `isn't`, `"Right now..."`, `"Heads up:"`, `"If Postgres is down..."`).
+  - **Zero stiff or robotic documentation tone:** Never write dry third-person spec prose (*"Defines X before any query logic uses them"*, *"Extends X with Y"*, *"Wires X into the container"*, *"This service is responsible for..."*) or heavy AI words (*orchestrates, leverages, materializes, facilitates, subsequently, aforementioned*). Say *"Sets up the lock table first so..."*, *"Hooks the lock check into `/webhooks`..."*, *"Skips duplicates right away"*.
+- **Short & Simple (`<= 20` words):** One clear idea per sentence using everyday words (*saves, checks, skips, calls, fails, deletes*).
+- **1-Sentence Invariant & 5-Item Cap:** Step `explanation` MUST be **1 single casual sentence** (BLUF). Cap `points`, `table.rows`, `callouts`, and `untested_gaps` at **<= 5 items**, with <= 1 sentence per item.
+- **Dynamic Visual Modulation (Rotate Containers):** Never write walls of prose. Pair the 1-sentence `explanation` with a compact `table` for state/input->outcome rules, bold-anchored `points` (`{"anchor": "...", "text": "..."}`) for mechanics, `visuals` for UI/Figma screens, and `callouts` only for real risks/assumptions.
 
-#### E. Compiler-Enforced Red-Marked Visuals (`visuals[]`)
-- Attach red-marked screenshots (`overview.visuals` and/or `steps[*].visuals`) wherever code connects to a user-visible screen, admin table, badge, form, or flow—including backend steps whose output feeds a frontend UI.
+#### F. Compiler-Enforced Red-Marked Visuals (`visuals[]`)
+- Put big-picture red-marked screenshot(s) in `overview.visuals` and step-specific screenshots in `steps[*].visuals` wherever code connects to a user-visible screen, admin table, badge, form, or flow—including backend steps whose output feeds a frontend UI.
 - Every screenshot item with `src` **MUST** exist on disk and **MUST** contain at least one `circle`, `arrow`, or `box` in `annotations[]`.
 - `build_artifact.py` **fails with exit code `2`** if zero red-marked screenshots are attached without checking first. When **no UI consumer exists anywhere** (e.g., pure CLI, SDK, infra, or internal job) or no app/Figma image is reachable, set top-level `"no_visuals_justification"` in `plan.json` explaining what you checked—the build then succeeds cleanly (`exit 0`) and drops the screenshot section without clutter.
 

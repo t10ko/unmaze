@@ -282,6 +282,7 @@ class UnmazeTestSuite(unittest.TestCase):
 
         # 1. Zero visuals and no justification -> MUST fail!
         no_vis_plan = copy.deepcopy(self.sample_plan)
+        no_vis_plan["overview"].pop("visuals", None)
         for st in no_vis_plan["steps"]:
             st.pop("visuals", None)
         with self.assertRaises(build_artifact.PlanValidationError) as ctx_none:
@@ -391,6 +392,37 @@ class UnmazeTestSuite(unittest.TestCase):
         with self.assertRaises(build_artifact.PlanValidationError) as ctx_ov:
             build_artifact.validate_and_normalize_plan(manifest, overlap_plan)
         self.assertIn("overlaps already-highlighted", str(ctx_ov.exception))
+
+    def test_overview_whole_task_screenshots_and_optional_this_pr_part(self) -> None:
+        manifest = self._build_sample_manifest()
+
+        # 1. Partial-PR case: Overview shows whole_task, screenshot, and What we built in this PR
+        validated_partial = build_artifact.validate_and_normalize_plan(
+            manifest, copy.deepcopy(self.sample_plan), search_dirs=[REPO_ROOT / "examples"]
+        )
+        rendered_partial = build_artifact.build_html_artifact(
+            manifest, validated_partial, search_dirs=[REPO_ROOT / "examples"]
+        )
+        md_partial = build_artifact.build_markdown_summary(manifest, validated_partial)
+        ov_section = rendered_partial.split('id="step-overview"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("Big Picture · Payments Admin Console", ov_section)
+        self.assertIn('class="pr-part-card"', ov_section)
+        self.assertIn("What we built in this PR", ov_section)
+        self.assertLess(ov_section.index('class="visual-card"'), ov_section.index('class="pr-part-card"'))
+        self.assertIn("- **What we built in this PR:**", md_partial)
+
+        # 2. Whole-task PR case: `this_pr_part` omitted -> succeeds cleanly and omits `.pr-part-card`!
+        full_task_plan = copy.deepcopy(self.sample_plan)
+        full_task_plan["overview"].pop("this_pr_part", None)
+        validated_full = build_artifact.validate_and_normalize_plan(
+            manifest, full_task_plan, search_dirs=[REPO_ROOT / "examples"]
+        )
+        rendered_full = build_artifact.build_html_artifact(
+            manifest, validated_full, search_dirs=[REPO_ROOT / "examples"]
+        )
+        md_full = build_artifact.build_markdown_summary(manifest, validated_full)
+        self.assertNotIn('<div class="pr-part-card">', rendered_full)
+        self.assertNotIn("What we built in this PR", md_full)
 
 
 if __name__ == "__main__":
