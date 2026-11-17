@@ -23,7 +23,7 @@ GitHub still dumps changed files in **alphabetical order (`A → Z`)**:
 
 1. **Arc-Style Chapters & Role/Area Tree Filter:** Splits multi-part PRs into ordered chapters (`Chapter 1`, `Chapter 2`, ...) in a collapsible Arc sidebar, with a **pronounced top-bar tree filter** (`Frontend`, `Backend & API`, `Database & Contracts` → specific app areas) that dims unrelated chapters and steps so each engineer can review their own slice.
 2. **True Timeline File Evolution & Clickable Diff Blocks:** Files grow step by step along the review timeline so future changes never leak early—and inside large functions or new files, hovering tricky code blocks tints them smoothly over red/green/gray lines and clicking opens a side-margin explanation without covering a single character of code.
-3. **Click Any Repo Term to Learn It From Scratch:** Don't know what `WebhookDispatcher` does in this project? Click any highlighted concept chip to open a plain-English engineering modal explaining how that part of the codebase works from zero—and jump straight to the lines touching it.
+3. **Click Any Task or Repo Concept Whenever You Encounter It:** A dedicated second-pass AI sweep explains **both** new terms/things introduced by the task and existing repo services—semantically linking natural phrases (like *frees the lock* or *60s timer*) with clean dotted underlines across every step, bullet, table, and diff note.
 4. **Big-Picture Overview & Super Casual Teammate Voice:** Overview explains the **whole task** casually in short, simple English with red-marked screenshots up front (and optionally states which part this PR built if it's part of a bigger effort)—while keeping all writing across the board relaxed and conversational instead of stiff AI prose.
 
 ---

@@ -1,6 +1,6 @@
-# `plan.json` Schema Reference (v0.5)
+# `plan.json` Schema Reference (v0.6)
 
-`build_artifact.py` merges `diff-manifest.json` with `plan.json` to compile the Arc-sidebar review guide, cumulative timeline file states, clickable concept modals, and annotated UI/Figma screenshots.
+`build_artifact.py` merges `diff-manifest.json` with `plan.json` to compile the Arc-sidebar review guide, cumulative timeline file states, semantic concept modals, and annotated UI/Figma screenshots.
 
 **Hard invariants & core writing rules:**
 1. **Super Casual Teammate Tone Across the Whole Board:** Every text field in `plan.json` (`overview`, `chapters`, `steps`, `points`, `table`, `diff_highlights`, `visuals[*].caption`, `concepts`, `callouts`, `mechanical`) MUST be written **super casually** in short, simple everyday English—like a teammate walking you through the PR on Slack (`we`, `you`, contractions like `we're`, `don't`, `it's`, zero stiff spec prose or AI jargon).
@@ -8,8 +8,11 @@
    - `overview.whole_task` (required; `tldr` accepted as alias): 1–2 short, super casual sentences explaining **the whole task** (the big picture, even if it spans multiple PRs).
    - `overview.visuals`: Put big-picture red-marked screenshot(s) right on `Overview` whenever UI visuals apply so the reviewer immediately sees what the feature looks like.
    - `overview.this_pr_part` (optional): Include **only** when this PR builds one slice of a bigger task, casually stating what part we built here. Omit completely when this PR implements the whole task!
-3. **100% Changed-Line Coverage (exit code `2` on violation):** Every changed (`+`/`−`) line in every hunk (`H001`..`HNNN`) MUST be claimed **exactly once** across `steps[*].hunk_ids` and `mechanical.groups[*].hunk_ids` (using whole-hunk `"H007"` or line-slice `"H007:1-34,52"` syntax).
-4. **Mandatory Red-Marked Screenshots (Frontend AND Backend PRs, exit code `2` on violation):**
+3. **Mandatory 2nd-Pass Semantic Concept & Link Sweep (`concept_sweep_completed: true`, exit code `2` on violation):**
+   - `concepts[]` covers **both** new terms/things introduced by this task (`"origin": "introduced"`) **and** existing repo/domain concepts (`"origin": "existing"`).
+   - Before compiling HTML, run `concept_sweep.py dump` -> fresh-eyes pass -> `concept_sweep.py apply` so every semantic mention (`[[concept-id|natural phrase]]`) across every slot is clickable on the spot.
+4. **100% Changed-Line Coverage (exit code `2` on violation):** Every changed (`+`/`−`) line in every hunk (`H001`..`HNNN`) MUST be claimed **exactly once** across `steps[*].hunk_ids` and `mechanical.groups[*].hunk_ids` (using whole-hunk `"H007"` or line-slice `"H007:1-34,52"` syntax).
+5. **Mandatory Red-Marked Screenshots (Frontend AND Backend PRs, exit code `2` on violation):**
    - Every visual card with `src` MUST exist on disk (or be a valid `data:`/`https:` URL) and MUST include at least one red mark (`circle`, `arrow`, or `box`) inside `annotations[]`.
    - Every `plan.json` MUST attach at least 1 red-marked screenshot across `overview.visuals` or `steps[*].visuals`—even on backend-only PRs whenever a frontend screen consumes or reflects that backend logic.
    - When zero UI consumers exist (e.g., pure CLI/SDK/infra) or no UI/Figma/screenshot is reachable after checking downstream callers, pass top-level `"no_visuals_justification"` (`>= 20` chars) so the build succeeds cleanly (`exit 0`) and omits the screenshot block.
@@ -39,27 +42,32 @@
       }
     ]
   },
-  "architecture_map": {
-    "nodes": [
-      { "id": "senders", "label": "Stripe / GitHub", "status": "unchanged", "steps": [] },
-      { "id": "router", "label": "api/routes/webhooks.ts", "status": "modified", "steps": ["step-4"] },
-      { "id": "store", "label": "PostgresIdempotencyStore", "status": "added", "steps": ["step-2", "step-3"] },
-      { "id": "db", "label": "webhook_idempotency_keys", "status": "added", "steps": ["step-1"] },
-      { "id": "dispatcher", "label": "WebhookDispatcher", "status": "unchanged", "steps": [] }
-    ]
-  },
+  "concept_sweep_completed": true,
   "concepts": [
+    {
+      "id": "claimed-lease",
+      "term": "60s Lease",
+      "origin": "introduced",
+      "file": "services/idempotency/store.ts",
+      "what_it_is": "Short 60-second lock timer we put on a webhook ID while a worker is handling it.",
+      "how_it_works": [
+        "**Crash recovery:** If a worker dies mid-request, `lease_expires_at` passes and the next retry takes over."
+      ],
+      "pr_impact": "New in this PR so crashed pods never block retries forever.",
+      "related_steps": ["step-1", "step-2", "step-4"]
+    },
     {
       "id": "webhook-dispatcher",
       "term": "WebhookDispatcher",
+      "origin": "existing",
       "aliases": ["dispatchProviderWebhook", "webhookDispatcher"],
       "file": "services/webhooks/dispatcher.ts",
-      "what_it_is": "Routes verified provider webhooks to domain handlers like billing and repository sync.",
+      "what_it_is": "Hands verified webhooks off to our billing and repo-sync handlers.",
       "how_it_works": [
-        "**Execution model:** Runs synchronously inside the `POST /webhooks/:provider` HTTP handler with no background queue.",
-        "**Error handling:** Throws when a downstream handler fails so Express returns `500` and the provider retries later."
+        "**Runs inline:** Executes right inside the `POST /webhooks/:provider` request with no background queue.",
+        "**On error:** Throws when a downstream handler fails so Express returns `500` and the sender retries later."
       ],
-      "pr_impact": "Its own code is untouched, but `webhookRouter` now skips calling it whenever `PostgresIdempotencyStore` reports a duplicate event.",
+      "pr_impact": "We didn't touch its code—`webhookRouter` just skips calling it whenever `PostgresIdempotencyStore` spots a duplicate.",
       "related_steps": ["step-4"]
     }
   ],

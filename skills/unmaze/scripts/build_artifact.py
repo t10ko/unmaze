@@ -163,51 +163,98 @@ def esc(value: Any) -> str:
 
 
 PROSE_TOKEN_RE = re.compile(r"\[\[([^\]]+)\]\]|`([^`\n]+)`")
+BRACKET_CLEAN_RE = re.compile(r"\[\[([^\]]+)\]\]")
+SENTENCE_BREAK_RE = re.compile(r"[.!?](?:\s|$)|\n")
+
+
+def strip_concept_markup(value: Any) -> str:
+    """Strip `[[concept-id|Label]]` -> `Label` for plain-text sidebar tabs and Markdown export."""
+    if value is None:
+        return ""
+
+    def _repl(m: re.Match[str]) -> str:
+        raw = m.group(1).strip()
+        return raw.split("|", 1)[1].strip() if "|" in raw else raw
+
+    return BRACKET_CLEAN_RE.sub(_repl, str(value))
 
 
 def fmt_prose(value: Any, concept_lookup: dict[str, str] | None = None) -> str:
-    """Escape prose safely while turning `[[concept]]` and matching `` `Term` `` into clickable concept triggers."""
+    """Escape prose safely while turning semantic `[[concept-id|phrase]]` and `` `Term` `` into clickable links.
+
+    Deduplicates repeated mentions of the exact same concept within a single sentence
+    (preferring explicit `[[concept-id|phrase]]` tags over implicit backtick aliases in the
+    same sentence), while resetting at every sentence boundary so every new sentence, bullet,
+    table cell, caption, or highlight note stays clickable.
+    """
     if value is None:
         return ""
     text = str(value)
     lookup = concept_lookup or {}
-    out: list[str] = []
-    pos = 0
-    for m in PROSE_TOKEN_RE.finditer(text):
-        start, end = m.span()
-        if start > pos:
-            out.append(esc(text[pos:start]))
-        if m.group(1) is not None:
-            raw_ref = m.group(1).strip()
-            if "|" in raw_ref:
-                cid_part, label_part = raw_ref.split("|", 1)
-                cid_key = cid_part.strip().lower()
-                display = label_part.strip()
-            else:
-                cid_key = raw_ref.lower()
-                display = raw_ref
-            cid = lookup.get(cid_key)
-            if cid:
-                out.append(
-                    f'<button type="button" class="concept-link" data-concept="{esc(cid)}">'
-                    f'{esc(display)}<span class="concept-dot" aria-hidden="true">?</span></button>'
-                )
-            else:
-                out.append(f'<code class="inline-code">{esc(display)}</code>')
-        else:
-            code_txt = m.group(2)
-            cid = lookup.get(code_txt.strip().lower())
-            if cid:
-                out.append(
-                    f'<button type="button" class="concept-link" data-concept="{esc(cid)}">'
-                    f'{esc(code_txt)}<span class="concept-dot" aria-hidden="true">?</span></button>'
-                )
-            else:
-                out.append(f'<code class="inline-code">{esc(code_txt)}</code>')
-        pos = end
 
-    if pos < len(text):
-        out.append(esc(text[pos:]))
+    # Split into (sentence_chunk, delimiter) pairs so explicit `[[cid|...]]` inside a sentence
+    # takes priority over an earlier implicit `` `alias` `` in that same sentence.
+    parts = re.split(r"([.!?](?:\s|$)|\n)", text)
+    out: list[str] = []
+    for chunk_idx in range(0, len(parts), 2):
+        sent = parts[chunk_idx]
+        delim = parts[chunk_idx + 1] if chunk_idx + 1 < len(parts) else ""
+        explicit_cids_in_sent: set[str] = set()
+        for bm in BRACKET_CLEAN_RE.finditer(sent):
+            raw_b = bm.group(1).strip().split("|", 1)[0].strip()
+            norm_b = re.sub(r"[^a-z0-9_-]+", "-", raw_b.lower()).strip("-")
+            resolved = lookup.get(norm_b) or lookup.get(raw_b.lower())
+            if resolved:
+                explicit_cids_in_sent.add(resolved)
+
+        seen_in_sentence: set[str] = set()
+        pos = 0
+        for m in PROSE_TOKEN_RE.finditer(sent):
+            start, end = m.span()
+            if start > pos:
+                out.append(esc(sent[pos:start]))
+            if m.group(1) is not None:
+                raw_ref = m.group(1).strip()
+                if "|" in raw_ref:
+                    cid_part, label_part = raw_ref.split("|", 1)
+                    cid_key = re.sub(r"[^a-z0-9_-]+", "-", cid_part.strip().lower()).strip("-")
+                    display = label_part.strip()
+                else:
+                    cid_key = re.sub(r"[^a-z0-9_-]+", "-", raw_ref.lower()).strip("-")
+                    display = raw_ref
+                is_code_lbl = display.startswith("`") and display.endswith("`") and len(display) > 2
+                if is_code_lbl:
+                    display = display[1:-1]
+                cid = lookup.get(cid_key) or lookup.get(raw_ref.split("|", 1)[0].strip().lower())
+                if cid and cid not in seen_in_sentence:
+                    seen_in_sentence.add(cid)
+                    cls = "concept-link concept-link-code" if is_code_lbl else "concept-link"
+                    out.append(
+                        f'<button type="button" class="{cls}" data-concept="{esc(cid)}">'
+                        f"{esc(display)}</button>"
+                    )
+                elif is_code_lbl:
+                    out.append(f'<code class="inline-code">{esc(display)}</code>')
+                else:
+                    out.append(esc(display))
+            else:
+                code_txt = m.group(2)
+                key_low = code_txt.strip().lower()
+                cid = lookup.get(key_low) or lookup.get(key_low.removesuffix("()"))
+                if cid and cid not in seen_in_sentence and cid not in explicit_cids_in_sent:
+                    seen_in_sentence.add(cid)
+                    out.append(
+                        f'<button type="button" class="concept-link concept-link-code" data-concept="{esc(cid)}">'
+                        f"{esc(code_txt)}</button>"
+                    )
+                else:
+                    out.append(f'<code class="inline-code">{esc(code_txt)}</code>')
+            pos = end
+
+        if pos < len(sent):
+            out.append(esc(sent[pos:]))
+        if delim:
+            out.append(esc(delim))
     return "".join(out)
 
 
@@ -1310,7 +1357,7 @@ def validate_and_normalize_plan(
                     "`chapters[*].step_ids` must partition `steps[*].id` in exact reading order without omissions or duplicates."
                 )
 
-    # Validate optional Concepts (New-to-Repo Engineering Modals)
+    # Validate Concepts (both Task-Introduced & Existing Repo Concepts) + Pass-2 Semantic Sweep Gate
     concepts = plan.get("concepts") or []
     if not isinstance(concepts, list):
         errors.append("`concepts` must be an array if provided.")
@@ -1325,6 +1372,12 @@ def validate_and_normalize_plan(
             errors.append(f"Duplicate or empty concept id `{cid}`.")
         seen_concepts.add(cid)
         c["id"] = cid
+        raw_origin = str(c.get("origin") or "existing").strip().lower()
+        c["origin"] = (
+            "introduced"
+            if raw_origin in {"introduced", "new", "this_pr", "task", "added"}
+            else "existing"
+        )
         if not str(c.get("term") or "").strip():
             errors.append(f"Concept `{cid}` requires `term`.")
         if not str(c.get("what_it_is") or "").strip():
@@ -1333,28 +1386,15 @@ def validate_and_normalize_plan(
             if str(rs) not in seen_step_ids:
                 errors.append(f"Concept `{cid}` references unknown `related_steps` entry `{rs}`.")
 
-    arch = plan.get("architecture_map") or {}
-    if isinstance(arch, dict):
-        node_ids: set[str] = set()
-        for n in arch.get("nodes") or []:
-            if not isinstance(n, dict) or not n.get("id"):
-                errors.append("Every node in `architecture_map.nodes` must have an `id`.")
-                continue
-            nid = str(n["id"])
-            node_ids.add(nid)
-            status = str(n.get("status", "modified")).lower()
-            if status not in VALID_NODE_STATUS:
-                errors.append(f"Architecture node `{nid}` has invalid status `{status}`.")
-            n["status"] = status
-            for ref_step in n.get("steps") or []:
-                if ref_step not in seen_step_ids:
-                    errors.append(f"Architecture node `{nid}` references unknown step `{ref_step}`.")
-        for edge in arch.get("edges") or []:
-            if isinstance(edge, dict):
-                if edge.get("from") not in node_ids or edge.get("to") not in node_ids:
-                    errors.append(
-                        f"Architecture edge `{edge.get('from')} -> {edge.get('to')}` references unknown node ID."
-                    )
+    if concepts and not bool(plan.get("concept_sweep_completed")):
+        errors.append(
+            "Semantic Concept Sweep Check FAILED — `plan.json` defines `concepts[]` without "
+            '`"concept_sweep_completed": true`!\n'
+            "  Run Step 3.5 (Fresh-Eyes Semantic Concept & Link Sweep) before compiling:\n"
+            "    1. Dump prose slots: `python3 <SKILL_DIR>/scripts/concept_sweep.py dump --plan $WORK_DIR/plan.json`\n"
+            "    2. Run a fresh-eyes pass to add any missing task-introduced concepts and wrap `[[concept-id|natural phrase]]` wherever a concept is talked about,\n"
+            "    3. Apply patch: `python3 <SKILL_DIR>/scripts/concept_sweep.py apply --plan $WORK_DIR/plan.json --patch $WORK_DIR/concept-links.json`."
+        )
 
     # Enforce Mandatory Visual Grounding (even on backend PRs with a frontend consumer!)
     no_vis_reason = str(plan.get("no_visuals_justification") or "").strip()
@@ -2065,7 +2105,7 @@ def render_rotated_structured_blocks_html(
         for pt in pts[:5]:
             if isinstance(pt, dict) and pt.get("text"):
                 anchor = str(pt.get("anchor") or "").strip()
-                lead = f"<strong>{esc(anchor)}:</strong> " if anchor else ""
+                lead = f"<strong>{fmt_prose(anchor, concept_lookup)}:</strong> " if anchor else ""
                 li_items.append(f"<li>{lead}{fmt_prose(pt['text'], concept_lookup)}</li>")
             elif isinstance(pt, str) and pt.strip():
                 li_items.append(f"<li>{fmt_prose(pt.strip(), concept_lookup)}</li>")
@@ -2073,41 +2113,6 @@ def render_rotated_structured_blocks_html(
             blocks.append(f'<ul class="anchored-list">{"".join(li_items)}</ul>')
 
     return "".join(blocks)
-
-
-def render_flow_chain_html(arch: dict[str, Any] | None, concept_lookup: dict[str, str]) -> str:
-    if not arch or not arch.get("nodes"):
-        return ""
-    nodes = arch.get("nodes") or []
-    chips: list[str] = []
-    for n in nodes:
-        label = str(n.get("label") or n["id"])
-        status = str(n.get("status") or "modified")
-        step_refs = [str(s) for s in (n.get("steps") or [])]
-        first_step = step_refs[0] if step_refs else ""
-        cid = concept_lookup.get(label.lower())
-        status_dot = (
-            '<span class="flow-tag flow-tag-new">new</span>'
-            if status == "added"
-            else ('<span class="flow-tag flow-tag-mod">changed</span>' if status == "modified" else "")
-        )
-        if cid and not first_step:
-            chips.append(
-                f'<button type="button" class="flow-chip flow-{esc(status)}" data-concept="{esc(cid)}">'
-                f"<span>{esc(label)}</span><span class=\"concept-dot\" aria-hidden=\"true\">?</span></button>"
-            )
-        elif first_step:
-            chips.append(
-                f'<button type="button" class="flow-chip flow-{esc(status)}" data-goto-step="{esc(first_step)}">'
-                f"<span>{esc(label)}</span>{status_dot}</button>"
-            )
-        else:
-            chips.append(
-                f'<span class="flow-chip flow-{esc(status)}"><span>{esc(label)}</span></span>'
-            )
-
-    joined = ' <span class="flow-arrow" aria-hidden="true">→</span> '.join(chips)
-    return f'<div class="flow-strip" aria-label="System flow">{joined}</div>'
 
 
 def render_concept_templates_html(
@@ -2121,6 +2126,7 @@ def render_concept_templates_html(
     for c in concepts:
         cid = c["id"]
         term = str(c["term"]).strip()
+        is_new = c.get("origin") == "introduced"
         file_ref = str(c.get("file") or "").strip()
         what_it_is = str(c["what_it_is"]).strip()
         how_list = [str(x).strip() for x in (c.get("how_it_works") or []) if str(x).strip()][:5]
@@ -2130,7 +2136,14 @@ def render_concept_templates_html(
         # Avoid self-linking the concept's own term inside its own modal
         inner_lookup = {k: v for k, v in concept_lookup.items() if v != cid}
 
+        origin_pill = (
+            '<span class="concept-origin-pill is-new">Introduced in this PR</span>'
+            if is_new
+            else '<span class="concept-origin-pill">Existing in repo</span>'
+        )
         file_badge = f'<code class="concept-file-pill">{esc(file_ref)}</code>' if file_ref else ""
+        meta_row = f'<div class="concept-meta-row">{origin_pill}{file_badge}</div>'
+        how_heading = "How we set it up here" if is_new else "How it works in this repo"
         how_html = ""
         if how_list:
             lis = []
@@ -2144,7 +2157,7 @@ def render_concept_templates_html(
                 else:
                     lis.append(f"<li>{fmt_prose(item, inner_lookup)}</li>")
             how_html = (
-                f'<div class="concept-sec"><h3>How it works in this repo</h3>'
+                f'<div class="concept-sec"><h3>{how_heading}</h3>'
                 f'<ul class="anchored-list">{"".join(lis)}</ul></div>'
             )
 
@@ -2166,7 +2179,7 @@ def render_concept_templates_html(
         tpls.append(
             f"""<template id="concept-tpl-{esc(cid)}" data-term="{esc(term)}">
   <div class="concept-modal-content">
-    {file_badge}
+    {meta_row}
     <p class="lead-text">{fmt_prose(what_it_is, inner_lookup)}</p>
     {how_html}
     {impact_html}
@@ -2196,10 +2209,14 @@ def build_html_artifact(
     for c in concepts:
         cid = c["id"]
         concept_lookup[cid.lower()] = cid
-        concept_lookup[str(c["term"]).strip().lower()] = cid
+        t_low = str(c["term"]).strip().lower()
+        concept_lookup[t_low] = cid
+        concept_lookup[t_low.removesuffix("()")] = cid
         for alias in c.get("aliases") or []:
-            if str(alias).strip():
-                concept_lookup[str(alias).strip().lower()] = cid
+            a_low = str(alias).strip().lower()
+            if a_low:
+                concept_lookup[a_low] = cid
+                concept_lookup[a_low.removesuffix("()")] = cid
 
     # Pre-build unified timeline token stream for every file
     file_tokens_map: dict[str, list[dict[str, Any]]] = {}
@@ -2224,7 +2241,8 @@ def build_html_artifact(
 
     step_index_by_id = {st["id"]: idx for idx, st in enumerate(steps, start=1)}
     step_title_by_id = {
-        st["id"]: f"Step {idx}: {st['title']}" for idx, st in enumerate(steps, start=1)
+        st["id"]: f"Step {idx}: {strip_concept_markup(st['title'])}"
+        for idx, st in enumerate(steps, start=1)
     }
 
     # --- Pre-compute 2-Level Scope Tree (`Role Surface -> App Area`, zero filenames) ---
@@ -2325,7 +2343,7 @@ def build_html_artifact(
                 sub_btns.append(
                     f'<button type="button" class="arc-subtab" data-panel-index="{p_idx}" data-chapter-id="{esc(cid)}">'
                     f'<span class="arc-sub-dot" aria-hidden="true"></span>'
-                    f'<span class="arc-sub-txt">{s_pos}. {esc(st_obj["title"])}</span>'
+                    f'<span class="arc-sub-txt">{s_pos}. {esc(strip_concept_markup(st_obj["title"]))}</span>'
                     f'<span class="arc-sub-tag">{esc(lyr_short)}</span>'
                     f"</button>"
                 )
@@ -2333,7 +2351,7 @@ def build_html_artifact(
                 f"""<div class="arc-chapter" data-chapter-box="{esc(cid)}">
           <button type="button" class="arc-tab arc-chapter-btn" data-panel-index="{first_panel_idx}" data-chapter-id="{esc(cid)}">
             <span class="arc-ch-num">Chapter {c_idx}</span>
-            <span class="arc-tab-label">{esc(ch['title'])}</span>
+            <span class="arc-tab-label">{esc(strip_concept_markup(ch['title']))}</span>
             <span class="arc-match-pill" hidden></span>
           </button>
           <div class="arc-sublist">
@@ -2347,7 +2365,7 @@ def build_html_artifact(
             arc_nav_items.append(
                 f'<button type="button" class="arc-tab" data-panel-index="{idx}">'
                 f'<span class="arc-ch-num">{idx}</span>'
-                f'<span class="arc-tab-label">{esc(st["title"])}</span>'
+                f'<span class="arc-tab-label">{esc(strip_concept_markup(st["title"]))}</span>'
                 f'<span class="arc-sub-tag">{esc(lyr_short)}</span>'
                 f"</button>"
             )
@@ -2364,7 +2382,6 @@ def build_html_artifact(
 
     # --- Panel 0: Big Picture Overview ---
     panels_html: list[str] = []
-    flow_html = render_flow_chain_html(plan.get("architecture_map"), concept_lookup)
     global_ctx = str(overview.get("global_context") or "").strip()
     global_ctx_p = f'<p class="lead-subtle">{fmt_prose(global_ctx, concept_lookup)}</p>' if global_ctx else ""
     overview_visuals_html = render_visuals_block_html(
@@ -2387,12 +2404,14 @@ def build_html_artifact(
     if concepts:
         c_btns = "".join(
             f'<button type="button" class="concept-chip" data-concept="{esc(c["id"])}">'
-            f'{esc(c["term"])} <span class="concept-dot" aria-hidden="true">?</span></button>'
+            f'{esc(c["term"])}'
+            f'{" <span class=\"concept-new-tag\">new</span>" if c.get("origin") == "introduced" else ""}'
+            f' <span class="concept-dot" aria-hidden="true">?</span></button>'
             for c in concepts
         )
         concepts_bar_html = (
             f'<div class="concepts-Primer-box">'
-            f'<span class="ba-label">New to this part of the codebase? Click any chip for a quick rundown:</span>'
+            f'<span class="ba-label">Terms &amp; pieces in this review — click any chip (or dotted link in text) for a quick rundown:</span>'
             f'<div class="concept-chip-row">{c_btns}</div></div>'
         )
 
@@ -2404,7 +2423,7 @@ def build_html_artifact(
             ch_sum = str(ch.get("summary") or f"{len(ch['step_ids'])} steps").strip()
             ch_rows.append(
                 f'<tr data-overview-chapter="{esc(ch["id"])}">'
-                f'<td><button type="button" class="inline-jump" data-goto-chapter="{esc(ch["id"])}" data-goto-index="{first_p}">Chapter {c_idx} · {esc(ch["title"])} →</button></td>'
+                f'<td><button type="button" class="inline-jump" data-goto-chapter="{esc(ch["id"])}" data-goto-index="{first_p}">Chapter {c_idx} · {esc(strip_concept_markup(ch["title"]))} →</button></td>'
                 f"<td>{fmt_prose(ch_sum, concept_lookup)}</td>"
                 f"</tr>"
             )
@@ -2415,7 +2434,7 @@ def build_html_artifact(
         )
 
     first_btn_label = (
-        f"Start Chapter 1: {esc(chapters[0]['title'])} →"
+        f"Start Chapter 1: {esc(strip_concept_markup(chapters[0]['title']))} →"
         if chapters
         else f"Start Step 1: {esc(VALID_LAYERS[steps[0]['layer']]['short'])} →"
     )
@@ -2439,7 +2458,6 @@ def build_html_artifact(
             <p>{fmt_prose(overview['after_state'], concept_lookup)}</p>
           </div>
         </div>
-        {flow_html}
         {concepts_bar_html}
         {chapters_preview_html}
         <div class="step-footer">
@@ -2563,7 +2581,7 @@ def build_html_artifact(
       <div class="step-card">
         <div class="outside-filter-banner" hidden>Showing step outside your active area filter.</div>
         <p class="eyebrow">{eyebrow_txt}</p>
-        <h2 id="heading-{esc(sid)}" class="step-title">{esc(st['title'])}</h2>
+        <h2 id="heading-{esc(sid)}" class="step-title">{fmt_prose(st['title'], concept_lookup)}</h2>
         {lead_html}
         {rotated_blocks_html}
         {step_visuals_html}
@@ -2875,27 +2893,46 @@ def build_html_artifact(
       border: 1px solid var(--border);
     }}
 
-    /* Clickable Project Concept Links */
+    /* Clickable Project & Task Concept Links (subtle dotted underline in prose) */
     .concept-link {{
       appearance: none;
       border: 0;
-      background: var(--accent-soft);
+      background: transparent;
       color: var(--accent);
       font: inherit;
-      font-family: ui-monospace, SFMono-Regular, monospace;
-      font-size: 0.85em;
-      font-weight: 600;
-      padding: 0.08rem 0.38rem;
-      border-radius: 5px;
-      border-bottom: 1.5px dotted var(--accent);
+      font-weight: 540;
+      padding: 0 0.08rem;
+      margin: 0;
+      border-radius: 3px;
+      text-decoration-line: underline;
+      text-decoration-style: dotted;
+      text-decoration-thickness: 1.5px;
+      text-underline-offset: 3px;
       cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.25rem;
     }}
 
     .concept-link:hover {{
-      opacity: 0.88;
+      background: var(--accent-soft);
+      text-decoration-style: solid;
+    }}
+
+    .concept-link-code {{
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 0.86em;
+      font-weight: 600;
+      padding: 0.06rem 0.32rem;
+      border-radius: 5px;
+      background: var(--accent-soft);
+    }}
+
+    .concept-new-tag {{
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 0.04rem 0.3rem;
+      border-radius: 4px;
+      color: var(--add-fg);
+      background: var(--add-bg);
     }}
 
     .concept-dot {{
@@ -3881,9 +3918,33 @@ def build_html_artifact(
       padding: 1rem 1.15rem 1.2rem;
     }}
 
+    .concept-meta-row {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.45rem;
+      margin-bottom: 0.65rem;
+    }}
+
+    .concept-origin-pill {{
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 660;
+      padding: 0.14rem 0.48rem;
+      border-radius: 999px;
+      background: var(--subtle);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }}
+
+    .concept-origin-pill.is-new {{
+      color: var(--add-fg);
+      background: var(--add-bg);
+      border-color: transparent;
+    }}
+
     .concept-file-pill {{
       display: inline-block;
-      margin-bottom: 0.65rem;
       font-size: 0.76rem;
       padding: 0.15rem 0.45rem;
       border-radius: 5px;
@@ -5345,7 +5406,7 @@ def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> st
             lines.append(f"- **{grp['title']}:** {grp.get('reason') or 'Mechanical changes'}")
         lines.append("")
 
-    return "\n".join(lines) + "\n"
+    return "\n".join(strip_concept_markup(line) for line in lines) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:

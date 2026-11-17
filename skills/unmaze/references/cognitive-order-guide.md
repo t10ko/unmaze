@@ -47,7 +47,8 @@ When an AI creates a large new file or big contiguous edit (`H007`, lines `1..18
 
 ---
 
-## 5. Explain Repo Concepts From Scratch & Always Post Red-Marked Screenshots
+## 5. Semantic Concept Links Everywhere You Encounter Them (2nd Sweep) & Red-Marked Screenshots
 
-- **Repo Concept Modals (`concepts[]`):** Whenever the PR touches a non-obvious service, table, queue, or domain rule, explain it casually from zero for an engineer who joined the repo 5 minutes ago (owning file, callers, sync vs. async, and failure behavior).
+- **Task-Introduced + Existing Repo Concepts (`concepts[]`):** Include **both** brand-new terms/things introduced by this task (`"origin": "introduced"`) **and** existing repo modules/rules (`"origin": "existing"`), explained casually from zero for someone who joined 5 minutes ago.
+- **Dedicated 2nd-Pass Semantic Link Sweep (`concept_sweep.py`):** Never rely on dumb word-by-word matching. Run the fresh-eyes second pass over `concept_sweep.py dump` so casual indirect phrases (`[[claimed-lease|its 60s timer ran out]]`, `[[idempotency-store|frees the lock]]`) become clickable dotted-underline links across every step, bullet, table cell, caption, and diff-highlight note—while skipping generic English coincidences (*"as a rule"*, *"not an issue"*).
 - **Red-Marked Screenshots — Even on Backend PRs (`visuals[]`):** Trace backend, API, and DB changes forward to the frontend page, admin table, badge, or modal they power. Capture it (or export Figma), inspect it with `Read`, and draw red `circle`, `arrow`, or `box` marks showing what this code is for.

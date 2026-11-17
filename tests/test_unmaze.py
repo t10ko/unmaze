@@ -196,6 +196,7 @@ class UnmazeTestSuite(unittest.TestCase):
 
             evil_plan = {
                 "title": "<img src=x onerror=alert(1)>",
+                "concept_sweep_completed": True,
                 "overview": {
                     "tldr": "Touches `AuthCore` and <script>evil()</script>.",
                     "before_state": "before",
@@ -423,6 +424,121 @@ class UnmazeTestSuite(unittest.TestCase):
         md_full = build_artifact.build_markdown_summary(manifest, validated_full)
         self.assertNotIn('<div class="pr-part-card">', rendered_full)
         self.assertNotIn("What we built in this PR", md_full)
+
+    def test_semantic_concept_sweep_cli_gate_new_task_concepts_and_no_flow_strip(self) -> None:
+        manifest = self._build_sample_manifest()
+
+        # 1. Skipping Pass 2 (`concept_sweep_completed` missing/False) MUST fail validation!
+        un_swept = copy.deepcopy(self.sample_plan)
+        un_swept.pop("concept_sweep_completed", None)
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_gate:
+            build_artifact.validate_and_normalize_plan(manifest, un_swept)
+        self.assertIn("Semantic Concept Sweep Check FAILED", str(ctx_gate.exception))
+
+        # 2. Rendered HTML drops `.flow-strip`, renders `Introduced in this PR`, semantic links, and clean sidebar/md!
+        validated = build_artifact.validate_and_normalize_plan(
+            manifest, copy.deepcopy(self.sample_plan), search_dirs=[REPO_ROOT / "examples"]
+        )
+        rendered = build_artifact.build_html_artifact(
+            manifest, validated, search_dirs=[REPO_ROOT / "examples"]
+        )
+        md_out = build_artifact.build_markdown_summary(manifest, validated)
+
+        self.assertNotIn('class="flow-strip"', rendered)
+        self.assertIn("Introduced in this PR", rendered)
+        self.assertIn("Existing in repo", rendered)
+        self.assertIn(
+            '<button type="button" class="concept-link" data-concept="claimed-lease">its 60s timer ran out</button>',
+            rendered,
+        )
+        # Sidebar and Markdown strip `[[...]]` cleanly
+        self.assertNotIn("[[", rendered)
+        self.assertNotIn("[[", md_out)
+
+        # 3. Within a single sentence, duplicate concept mentions dedup; across two sentences, both link!
+        lookup = {"claimed-lease": "claimed-lease"}
+        two_mentions_one_sent = build_artifact.fmt_prose(
+            "Grabs [[claimed-lease|a 60s lock]] and frees [[claimed-lease|that lock]]. Next sentence checks [[claimed-lease|expired locks]].",
+            lookup,
+        )
+        self.assertEqual(two_mentions_one_sent.count('data-concept="claimed-lease"'), 2)
+
+        # 4. End-to-end CLI test of `concept_sweep.py dump` + `concept_sweep.py apply` (including invalid ID rejection)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            draft_plan = copy.deepcopy(un_swept)
+            plan_file = tmp_path / "plan.json"
+            plan_file.write_text(json.dumps(draft_plan), encoding="utf-8")
+
+            res_dump = subprocess.run(
+                [sys.executable, str(SCRIPTS_DIR / "concept_sweep.py"), "dump", "--plan", str(plan_file)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(res_dump.returncode, 0, res_dump.stderr)
+            dump_obj = json.loads(res_dump.stdout)
+            self.assertIn("overview.whole_task", dump_obj["prose_slots"])
+
+            # Unknown concept reference in patch -> rejected with exit code 2
+            bad_patch = tmp_path / "bad.json"
+            bad_patch.write_text(
+                json.dumps({"rewrites": {"overview.before_state": "Calls [[ghost-id|something]]."}}),
+                encoding="utf-8",
+            )
+            res_bad = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS_DIR / "concept_sweep.py"),
+                    "apply",
+                    "--plan",
+                    str(plan_file),
+                    "--patch",
+                    str(bad_patch),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(res_bad.returncode, 2)
+
+            # Valid patch -> applies cleanly and sets `concept_sweep_completed: true`
+            good_patch = tmp_path / "good.json"
+            good_patch.write_text(
+                json.dumps(
+                    {
+                        "new_concepts": [
+                            {
+                                "id": "dedup-badge",
+                                "term": "200 deduplicated",
+                                "origin": "introduced",
+                                "what_it_is": "Short HTTP 200 reply telling the sender we already saw this event.",
+                            }
+                        ],
+                        "rewrites": {
+                            "overview.after_state": "Now `webhookRouter` locks the ID first and replies with [[dedup-badge|an instant 200 skip]]."
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            res_good = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS_DIR / "concept_sweep.py"),
+                    "apply",
+                    "--plan",
+                    str(plan_file),
+                    "--patch",
+                    str(good_patch),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(res_good.returncode, 0, res_good.stderr)
+            updated_plan = json.loads(plan_file.read_text(encoding="utf-8"))
+            self.assertTrue(updated_plan["concept_sweep_completed"])
 
 
 if __name__ == "__main__":

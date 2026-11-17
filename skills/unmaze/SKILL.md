@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.5.1"
+  version: "0.6.0"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
@@ -19,7 +19,7 @@ GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at
 - **Top-Bar Role & Area Tree Filter** (2-level `Role Surface -> App Area` filter that dims unrelated chapters and steps so FE, BE, or domain engineers can review just their slice),
 - **Cumulative Timeline File Evolution** (showing each file *as it exists at that step*, slicing large hunks with `H007:1-34,52` so future steps don't leak early),
 - **Interactive Diff-Block Highlights** (hover-tinted code chunks inside large diffs or new files that open a side-margin explanation on click without covering any code),
-- **Clickable Repo Concept Modals** (explaining any touched module or domain term from scratch for an engineer who is new to the repo),
+- **Semantic Concept Modals Everywhere You Encounter Them** (a dedicated 2nd-pass AI sweep explains **both** brand-new terms/things introduced by this task **and** existing repo concepts, semantically linking casual phrases like `[[claimed-lease|frees the lock]]` wherever they're talked about across every step, bullet, table, caption, and diff note),
 - **Mandatory Red-Marked Screenshots — Even on Backend PRs** (traces backend/API/DB changes to the frontend screen they impact and places red circles, boxes, and arrows showing what the code is for), and
 - **100% deterministic changed-line accounting**.
 
@@ -91,10 +91,11 @@ Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cogniti
 - Whenever a single large hunk or new file mixes multiple stages (e.g., types + core method + later lifecycle helpers, or imports + logic), **slice it by line range** (`"H007:1-34,52"` in Step 2, `"H007:35-51"` in Step 3) so the file evolves cleanly step by step along the timeline!
 - When a single step still contains a **large or dense diff (`>= 20` lines, complex function, tricky SQL, or multi-branch handler)** that belongs together in one view, attach **2–5 `diff_highlights`** (`{"hunk_id": "H007", "lines": "14-29", "title": "...", "explanation": "..."}`) on the non-obvious blocks. Hovering tints that block across green/red/gray lines, and clicking opens a side-margin explanation without covering code. **Do NOT overdo it:** skip short/obvious diffs (`< 20` lines, imports, simple types), and cap at `<= 5` blocks per diff card (`build_artifact.py` rejects `> 5`).
 
-#### D. Project Concept Modals (`concepts[]`)
-- Define 3–8 `concepts` for key services, tables, queues, middlewares, or domain terms touched by this PR.
-- Write each concept **casually from scratch for a capable engineer who has never seen this project before**—plain, concrete engineering facts (owning file, callers, sync vs. async, failure behavior, and how this PR changes or relies on it). **Never** use childish metaphors or fairy-tale analogies.
-- Wrap concept names in backticks (`` `WebhookDispatcher` ``) or `[[concept-id|Label]]` in step text so they automatically become clickable modal links!
+#### D. Task-Introduced & Existing Repo Concept Modals (`concepts[]`)
+- Define 4–10 `concepts` covering **BOTH**:
+  1. **New words, domain concepts, states, tables, or helpers introduced by the task at hand** (`"origin": "introduced"`), AND
+  2. **Existing repo services, routes, queues, or domain terms** touched or relied on by this PR (`"origin": "existing"`).
+- Write each concept **casually from scratch for a capable engineer who has never seen this task or repo before**—plain, concrete facts (owning file, callers, sync vs. async, failure behavior, and how this PR sets it up or uses it). **Never** use childish metaphors.
 
 #### E. Keep Everything SUPER Casual + Simple English + Formatting Rotation (VERY IMPORTANT RULE)
 - **Keep Everything Super Casual Across the Whole Board:** Every single piece of writing—`overview`, chapter summaries, step titles, `explanation`, `points`, `table`, `diff_highlights`, screenshot `caption`s, `concepts`, `callouts`, and `mechanical`—**MUST sound like a friendly engineer walking a teammate through the code at their desk or on Slack**.
@@ -111,7 +112,25 @@ Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cogniti
 
 ---
 
-### Step 4: Compile & Verify 100% Diff Coverage + Visual Grounding
+### Step 3.5: Fresh-Eyes Semantic Concept & Link Sweep (Mandatory Second Pass)
+
+`build_artifact.py` **rejects `plan.json` (`exit 2`)** until this dedicated second sweep runs! Reviewers often filter straight into Chapter 2 or 3, so every task-introduced concept and repo term must be clickable **whenever they encounter it**—including indirect casual phrases (*"frees the lock"*, *"when a feed goes quiet"*), not just exact code identifiers.
+
+1. **Dump ONLY `concepts[]` and prose slots** (tiny ~60-line JSON, zero raw diffs or coordinates):
+   ```bash
+   python3 "<SKILL_DIR>/scripts/concept_sweep.py" dump --plan "$WORK_DIR/plan.json" > "$WORK_DIR/prose-dump.json"
+   ```
+2. **Run a Fresh-Eyes Semantic Linker Subagent** (invoke the `Agent`/`Task` tool—or perform a dedicated cold-reader pass if subagents are unavailable—passing **ONLY** `$WORK_DIR/prose-dump.json`, **NOT** the raw git diff, so it reads with genuine fresh reviewer eyes) to write `$WORK_DIR/concept-links.json`:
+   - **Spot missing concepts:** Add any unexplained task-introduced term, new status/rule, or domain concept into `"new_concepts"` (`"origin": "introduced"` or `"existing"`, written super casually).
+   - **Semantically link every mention across all slots:** In `"rewrites"`, wrap `[[concept-id|exact phrase in text]]` **every time a slot talks about a concept** across `overview`, `chapters`, `steps`, `points`, `table`, `visuals[*].caption`, `diff_highlights`, `callouts`, and `untested_gaps`—including natural paraphrases (`[[claimed-lease|its 60s timer ran out]]`, `[[webhook-dispatcher|billing and repo-sync handlers]]`), while **skipping** generic English coincidences (*"as a rule"*, *"not an issue"*). Link a concept at most once per single sentence, while re-linking it in every new sentence, bullet, cell, caption, and step!
+3. **Apply the semantic patch** (validates every slot key + concept ID and sets `"concept_sweep_completed": true`):
+   ```bash
+   python3 "<SKILL_DIR>/scripts/concept_sweep.py" apply --plan "$WORK_DIR/plan.json" --patch "$WORK_DIR/concept-links.json"
+   ```
+
+---
+
+### Step 4: Compile & Verify 100% Diff Coverage + Visual Grounding + Semantic Sweep
 
 ```bash
 python3 "<SKILL_DIR>/scripts/build_artifact.py" \
