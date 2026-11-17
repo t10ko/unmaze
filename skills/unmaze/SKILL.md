@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.6.0"
+  version: "0.7.0"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
@@ -91,13 +91,7 @@ Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cogniti
 - Whenever a single large hunk or new file mixes multiple stages (e.g., types + core method + later lifecycle helpers, or imports + logic), **slice it by line range** (`"H007:1-34,52"` in Step 2, `"H007:35-51"` in Step 3) so the file evolves cleanly step by step along the timeline!
 - When a single step still contains a **large or dense diff (`>= 20` lines, complex function, tricky SQL, or multi-branch handler)** that belongs together in one view, attach **2–5 `diff_highlights`** (`{"hunk_id": "H007", "lines": "14-29", "title": "...", "explanation": "..."}`) on the non-obvious blocks. Hovering tints that block across green/red/gray lines, and clicking opens a side-margin explanation without covering code. **Do NOT overdo it:** skip short/obvious diffs (`< 20` lines, imports, simple types), and cap at `<= 5` blocks per diff card (`build_artifact.py` rejects `> 5`).
 
-#### D. Task-Introduced & Existing Repo Concept Modals (`concepts[]`)
-- Define 4–10 `concepts` covering **BOTH**:
-  1. **New words, domain concepts, states, tables, or helpers introduced by the task at hand** (`"origin": "introduced"`), AND
-  2. **Existing repo services, routes, queues, or domain terms** touched or relied on by this PR (`"origin": "existing"`).
-- Write each concept **casually from scratch for a capable engineer who has never seen this task or repo before**—plain, concrete facts (owning file, callers, sync vs. async, failure behavior, and how this PR sets it up or uses it). **Never** use childish metaphors.
-
-#### E. Keep Everything SUPER Casual + Simple English + Formatting Rotation (VERY IMPORTANT RULE)
+#### D. Keep Everything SUPER Casual + Simple English + Formatting Rotation (VERY IMPORTANT RULE)
 - **Keep Everything Super Casual Across the Whole Board:** Every single piece of writing—`overview`, chapter summaries, step titles, `explanation`, `points`, `table`, `diff_highlights`, screenshot `caption`s, `concepts`, `callouts`, and `mechanical`—**MUST sound like a friendly engineer walking a teammate through the code at their desk or on Slack**.
   - **Use natural conversational phrasing:** Use `we`, `you`, and natural contractions (`we're`, `don't`, `it's`, `won't`, `isn't`, `"Right now..."`, `"Heads up:"`, `"If Postgres is down..."`).
   - **Zero stiff or robotic documentation tone:** Never write dry third-person spec prose (*"Defines X before any query logic uses them"*, *"Extends X with Y"*, *"Wires X into the container"*, *"This service is responsible for..."*) or heavy AI words (*orchestrates, leverages, materializes, facilitates, subsequently, aforementioned*). Say *"Sets up the lock table first so..."*, *"Hooks the lock check into `/webhooks`..."*, *"Skips duplicates right away"*.
@@ -105,32 +99,51 @@ Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cogniti
 - **1-Sentence Invariant & 5-Item Cap:** Step `explanation` MUST be **1 single casual sentence** (BLUF). Cap `points`, `table.rows`, `callouts`, and `untested_gaps` at **<= 5 items**, with <= 1 sentence per item.
 - **Dynamic Visual Modulation (Rotate Containers):** Never write walls of prose. Pair the 1-sentence `explanation` with a compact `table` for state/input->outcome rules, bold-anchored `points` (`{"anchor": "...", "text": "..."}`) for mechanics, `visuals` for UI/Figma screens, and `callouts` only for real risks/assumptions.
 
-#### F. Compiler-Enforced Red-Marked Visuals (`visuals[]`)
+#### E. Compiler-Enforced Red-Marked Visuals (`visuals[]`)
 - Put big-picture red-marked screenshot(s) in `overview.visuals` and step-specific screenshots in `steps[*].visuals` wherever code connects to a user-visible screen, admin table, badge, form, or flow—including backend steps whose output feeds a frontend UI.
 - Every screenshot item with `src` **MUST** exist on disk and **MUST** contain at least one `circle`, `arrow`, or `box` in `annotations[]`.
 - `build_artifact.py` **fails with exit code `2`** if zero red-marked screenshots are attached without checking first. When **no UI consumer exists anywhere** (e.g., pure CLI, SDK, infra, or internal job) or no app/Figma image is reachable, set top-level `"no_visuals_justification"` in `plan.json` explaining what you checked—the build then succeeds cleanly (`exit 0`) and drops the screenshot section without clutter.
 
 ---
 
-### Step 3.5: Fresh-Eyes Semantic Concept & Link Sweep (Mandatory Second Pass)
+### Step 4: Sweep 1 — Cold-Reader Candidate Extraction & Filtering From the Written Text
 
-`build_artifact.py` **rejects `plan.json` (`exit 2`)** until this dedicated second sweep runs! Reviewers often filter straight into Chapter 2 or 3, so every task-introduced concept and repo term must be clickable **whenever they encounter it**—including indirect casual phrases (*"frees the lock"*, *"when a feed goes quiet"*), not just exact code identifiers.
+Do **NOT** guess `concepts[]` during drafting (`Step 3` can leave `"concepts": []` empty)! Instead, extract candidates **from the finished casual text** with cold eyes, then filter down to only real concepts worth explaining:
 
-1. **Dump ONLY `concepts[]` and prose slots** (tiny ~60-line JSON, zero raw diffs or coordinates):
+1. **Dump ONLY the written prose slots** (no code diffs, no explanations):
    ```bash
-   python3 "<SKILL_DIR>/scripts/concept_sweep.py" dump --plan "$WORK_DIR/plan.json" > "$WORK_DIR/prose-dump.json"
+   python3 "<SKILL_DIR>/scripts/concept_sweep.py" dump-prose --plan "$WORK_DIR/plan.json" > "$WORK_DIR/prose-dump.json"
    ```
-2. **Run a Fresh-Eyes Semantic Linker Subagent** (invoke the `Agent`/`Task` tool—or perform a dedicated cold-reader pass if subagents are unavailable—passing **ONLY** `$WORK_DIR/prose-dump.json`, **NOT** the raw git diff, so it reads with genuine fresh reviewer eyes) to write `$WORK_DIR/concept-links.json`:
-   - **Spot missing concepts:** Add any unexplained task-introduced term, new status/rule, or domain concept into `"new_concepts"` (`"origin": "introduced"` or `"existing"`, written super casually).
-   - **Semantically link every mention across all slots:** In `"rewrites"`, wrap `[[concept-id|exact phrase in text]]` **every time a slot talks about a concept** across `overview`, `chapters`, `steps`, `points`, `table`, `visuals[*].caption`, `diff_highlights`, `callouts`, and `untested_gaps`—including natural paraphrases (`[[claimed-lease|its 60s timer ran out]]`, `[[webhook-dispatcher|billing and repo-sync handlers]]`), while **skipping** generic English coincidences (*"as a rule"*, *"not an issue"*). Link a concept at most once per single sentence, while re-linking it in every new sentence, bullet, cell, caption, and step!
-3. **Apply the semantic patch** (validates every slot key + concept ID and sets `"concept_sweep_completed": true`):
+2. **Run a Cold-Reader Subagent (Prose-Only, Zero Code Bias):** Pass **ONLY** `$WORK_DIR/prose-dump.json` (never the raw diff or repo files!) to a lightweight `Agent`/`Task` subagent (or cold-reader pass) to write `$WORK_DIR/concept-candidates.json` with `"candidates": [...]`:
+   - Pull out every unfamiliar or domain-specific term/phrase in the text—both **brand-new things introduced by this task** (`"origin": "introduced"`) and **existing repo/product concepts** (`"origin": "existing"`).
+   - Explicitly judge every candidate with boolean `"keep": true` or `"keep": false` + `"reason"`: keep **only real task/product/repo concepts (`4..10` items)** a reviewer genuinely benefits from clicking, and mark generic tech words (`Express`, `Postgres`, `HTTP 400`, `Promise`) or self-explanatory words `"keep": false`.
+3. **Validate & save the filtered shortlist:**
    ```bash
-   python3 "<SKILL_DIR>/scripts/concept_sweep.py" apply --plan "$WORK_DIR/plan.json" --patch "$WORK_DIR/concept-links.json"
+   python3 "<SKILL_DIR>/scripts/concept_sweep.py" save-candidates \
+     --plan "$WORK_DIR/plan.json" \
+     --candidates "$WORK_DIR/concept-candidates.json" > "$WORK_DIR/sweep2-input.json"
    ```
 
 ---
 
-### Step 4: Compile & Verify 100% Diff Coverage + Visual Grounding + Semantic Sweep
+### Step 5: Sweep 2 — Repo-Grounded Concept Explanations & Semantic Linking
+
+Now switch back to **full repository + diff context** (`Read` / `Grep` + `$WORK_DIR/hunks-readable.txt`) so zero concept explanations are guessed from prose:
+
+1. Read `$WORK_DIR/sweep2-input.json`. For **every** confirmed concept in `confirmed_concepts_to_explain_in_sweep_2`:
+   - Verify the real owning file, callers, sync vs. async execution, edge cases, and PR impact in the codebase/diff.
+   - Write `"concepts": [...]` **super casually** (`id`, `term`, `origin`, `file`, `what_it_is`, `how_it_works` bullets, `pr_impact`, `related_steps`)—accurate engineering facts, zero fairy-tale metaphors.
+2. Walk `prose_slots` top-to-bottom and write `"rewrites": { ... }` wrapping `[[concept-id|exact phrase in text]]` **every time any confirmed concept is talked about** across `overview`, `chapters`, `steps`, `points`, `table`, `visuals[*].caption`, `diff_highlights`, `callouts`, and `untested_gaps`—including indirect casual phrasing (`[[claimed-lease|its 60s timer ran out]]`, `[[idempotency-store|frees the lock]]`), while skipping generic English coincidences (*"as a rule"*, *"not an issue"*). Link a concept at most once per single sentence, while re-linking in every new sentence, bullet, cell, caption, and step!
+3. **Apply Sweep 2** (verifies Sweep 1 ran, verifies every confirmed concept has a grounded explanation, validates all slot paths & `[[...]]` links, and marks `"concept_sweep_completed": true`):
+   ```bash
+   python3 "<SKILL_DIR>/scripts/concept_sweep.py" apply \
+     --plan "$WORK_DIR/plan.json" \
+     --patch "$WORK_DIR/concept-links.json"
+   ```
+
+---
+
+### Step 6: Compile & Verify 100% Diff Coverage + Visual Grounding + Two-Sweep Pipeline
 
 ```bash
 python3 "<SKILL_DIR>/scripts/build_artifact.py" \
@@ -141,11 +154,11 @@ python3 "<SKILL_DIR>/scripts/build_artifact.py" \
   --markdown-out "$WORK_DIR/unmaze-review.md"
 ```
 
-If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, missing red-marked screenshots, unannotated image, or schema error), fix `$WORK_DIR/plan.json` (and capture/annotate the impacted UI screenshot if missing) and re-run until `✓ Verified 100% diff coverage` succeeds.
+If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, missing red-marked screenshots, skipped Sweep 1/Sweep 2, or schema error), fix the reported issue and re-run until `✓ Verified 100% diff coverage` succeeds.
 
 ---
 
-### Step 5: Publish Artifact & Present Concise Summary
+### Step 7: Publish Artifact & Present Concise Summary
 
 1. **Publish via Claude Code `Artifact` tool (Primary):** Read `$WORK_DIR/unmaze-review.html` and invoke the `Artifact` tool so the user receives a live shareable `claude.ai/code/artifact/...` URL.
 2. **Local Fallback:** Include `$WORK_DIR/unmaze-review.html` (and `$WORK_DIR/unmaze-review.md`), opening locally only if `Artifact` is unavailable or `--open` was passed.

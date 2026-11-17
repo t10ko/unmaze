@@ -47,8 +47,8 @@ When an AI creates a large new file or big contiguous edit (`H007`, lines `1..18
 
 ---
 
-## 5. Semantic Concept Links Everywhere You Encounter Them (2nd Sweep) & Red-Marked Screenshots
+## 5. Two-Sweep Concept Extraction, Grounded Explanations & Red-Marked Screenshots
 
-- **Task-Introduced + Existing Repo Concepts (`concepts[]`):** Include **both** brand-new terms/things introduced by this task (`"origin": "introduced"`) **and** existing repo modules/rules (`"origin": "existing"`), explained casually from zero for someone who joined 5 minutes ago.
-- **Dedicated 2nd-Pass Semantic Link Sweep (`concept_sweep.py`):** Never rely on dumb word-by-word matching. Run the fresh-eyes second pass over `concept_sweep.py dump` so casual indirect phrases (`[[claimed-lease|its 60s timer ran out]]`, `[[idempotency-store|frees the lock]]`) become clickable dotted-underline links across every step, bullet, table cell, caption, and diff-highlight note—while skipping generic English coincidences (*"as a rule"*, *"not an issue"*).
+- **Sweep 1 — Extract & Filter Candidates Cold From the Written Text (`dump-prose` -> `save-candidates`):** Read the finished casual text with zero code bias, pull out candidate terms (both `"introduced"` by this task and `"existing"` in the repo), and filter out generic tech noise (`keep: false`) so only concepts worth explaining (`keep: true`) survive.
+- **Sweep 2 — Repo-Grounded Casual Explanations & Semantic Linking (`apply`):** Look up the actual owning files and callers in the repo/diff for **only** the confirmed `keep: true` concepts (never guess from prose!), write casual explanations, and wrap `[[concept-id|natural phrase]]` wherever those concepts are talked about—skipping everyday English coincidences (*"as a rule"*, *"not an issue"*).
 - **Red-Marked Screenshots — Even on Backend PRs (`visuals[]`):** Trace backend, API, and DB changes forward to the frontend page, admin table, badge, or modal they power. Capture it (or export Figma), inspect it with `Read`, and draw red `circle`, `arrow`, or `box` marks showing what this code is for.

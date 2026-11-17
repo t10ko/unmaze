@@ -1386,14 +1386,26 @@ def validate_and_normalize_plan(
             if str(rs) not in seen_step_ids:
                 errors.append(f"Concept `{cid}` references unknown `related_steps` entry `{rs}`.")
 
-    if concepts and not bool(plan.get("concept_sweep_completed")):
+    no_concepts_just = str(plan.get("no_concepts_justification") or "").strip()
+    if not concepts and len(no_concepts_just) < 15:
         errors.append(
-            "Semantic Concept Sweep Check FAILED — `plan.json` defines `concepts[]` without "
-            '`"concept_sweep_completed": true`!\n'
-            "  Run Step 3.5 (Fresh-Eyes Semantic Concept & Link Sweep) before compiling:\n"
-            "    1. Dump prose slots: `python3 <SKILL_DIR>/scripts/concept_sweep.py dump --plan $WORK_DIR/plan.json`\n"
-            "    2. Run a fresh-eyes pass to add any missing task-introduced concepts and wrap `[[concept-id|natural phrase]]` wherever a concept is talked about,\n"
-            "    3. Apply patch: `python3 <SKILL_DIR>/scripts/concept_sweep.py apply --plan $WORK_DIR/plan.json --patch $WORK_DIR/concept-links.json`."
+            "Two-Sweep Concept Pipeline Check FAILED — `concepts[]` is empty without `\"no_concepts_justification\"`!\n"
+            "  Run both sweeps after writing `plan.json`:\n"
+            "    - Sweep 1 (Extract & filter candidates cold from written text):\n"
+            "        `python3 <SKILL_DIR>/scripts/concept_sweep.py dump-prose --plan $WORK_DIR/plan.json`\n"
+            "        `python3 <SKILL_DIR>/scripts/concept_sweep.py save-candidates --plan $WORK_DIR/plan.json --candidates $WORK_DIR/concept-candidates.json`\n"
+            "    - Sweep 2 (Explain confirmed concepts from repo/diff + link mentions):\n"
+            "        `python3 <SKILL_DIR>/scripts/concept_sweep.py apply --plan $WORK_DIR/plan.json --patch $WORK_DIR/concept-links.json`"
+        )
+    elif concepts and (
+        not bool(plan.get("concept_candidates_extracted"))
+        or not bool(plan.get("concept_sweep_completed"))
+    ):
+        errors.append(
+            "Two-Sweep Concept Pipeline Check FAILED — both `\"concept_candidates_extracted\": true` (Sweep 1) "
+            "and `\"concept_sweep_completed\": true` (Sweep 2) are required before compiling!\n"
+            "  1. Sweep 1 (Extract & filter candidates cold from written text): `concept_sweep.py dump-prose` -> `save-candidates`\n"
+            "  2. Sweep 2 (Explain confirmed concepts from repo/diff + link mentions): `concept_sweep.py apply`"
         )
 
     # Enforce Mandatory Visual Grounding (even on backend PRs with a frontend consumer!)

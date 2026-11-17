@@ -196,6 +196,7 @@ class UnmazeTestSuite(unittest.TestCase):
 
             evil_plan = {
                 "title": "<img src=x onerror=alert(1)>",
+                "concept_candidates_extracted": True,
                 "concept_sweep_completed": True,
                 "overview": {
                     "tldr": "Touches `AuthCore` and <script>evil()</script>.",
@@ -428,12 +429,26 @@ class UnmazeTestSuite(unittest.TestCase):
     def test_semantic_concept_sweep_cli_gate_new_task_concepts_and_no_flow_strip(self) -> None:
         manifest = self._build_sample_manifest()
 
-        # 1. Skipping Pass 2 (`concept_sweep_completed` missing/False) MUST fail validation!
+        # 1a. Skipping Sweep 1 (`concept_candidates_extracted` missing) MUST fail validation!
+        no_s1 = copy.deepcopy(self.sample_plan)
+        no_s1.pop("concept_candidates_extracted", None)
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_s1:
+            build_artifact.validate_and_normalize_plan(manifest, no_s1)
+        self.assertIn("Two-Sweep Concept Pipeline Check FAILED", str(ctx_s1.exception))
+
+        # 1b. Skipping Sweep 2 (`concept_sweep_completed` missing) MUST fail validation!
         un_swept = copy.deepcopy(self.sample_plan)
         un_swept.pop("concept_sweep_completed", None)
         with self.assertRaises(build_artifact.PlanValidationError) as ctx_gate:
             build_artifact.validate_and_normalize_plan(manifest, un_swept)
-        self.assertIn("Semantic Concept Sweep Check FAILED", str(ctx_gate.exception))
+        self.assertIn("Two-Sweep Concept Pipeline Check FAILED", str(ctx_gate.exception))
+
+        # 1c. Leaving `concepts: []` empty without `no_concepts_justification` MUST fail validation!
+        empty_c = copy.deepcopy(self.sample_plan)
+        empty_c["concepts"] = []
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_empty:
+            build_artifact.validate_and_normalize_plan(manifest, empty_c)
+        self.assertIn("Two-Sweep Concept Pipeline Check FAILED", str(ctx_empty.exception))
 
         # 2. Rendered HTML drops `.flow-strip`, renders `Introduced in this PR`, semantic links, and clean sidebar/md!
         validated = build_artifact.validate_and_normalize_plan(
@@ -451,7 +466,6 @@ class UnmazeTestSuite(unittest.TestCase):
             '<button type="button" class="concept-link" data-concept="claimed-lease">its 60s timer ran out</button>',
             rendered,
         )
-        # Sidebar and Markdown strip `[[...]]` cleanly
         self.assertNotIn("[[", rendered)
         self.assertNotIn("[[", md_out)
 
@@ -463,15 +477,31 @@ class UnmazeTestSuite(unittest.TestCase):
         )
         self.assertEqual(two_mentions_one_sent.count('data-concept="claimed-lease"'), 2)
 
-        # 4. End-to-end CLI test of `concept_sweep.py dump` + `concept_sweep.py apply` (including invalid ID rejection)
+        # 4. End-to-end CLI test of separated Sweep 1 (`dump-prose` -> `save-candidates`) -> Sweep 2 (`apply`)
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            draft_plan = copy.deepcopy(un_swept)
+            draft_plan = copy.deepcopy(self.sample_plan)
+            draft_plan["concepts"] = []
+            draft_plan.pop("concept_candidates_extracted", None)
+            draft_plan.pop("concept_sweep_completed", None)
             plan_file = tmp_path / "plan.json"
             plan_file.write_text(json.dumps(draft_plan), encoding="utf-8")
 
+            # Calling `apply` BEFORE Sweep 1 (`save-candidates`) MUST fail with exit code 2!
+            early_patch = tmp_path / "early.json"
+            early_patch.write_text(json.dumps({"concepts": [], "rewrites": {}}), encoding="utf-8")
+            res_early = subprocess.run(
+                [sys.executable, str(SCRIPTS_DIR / "concept_sweep.py"), "apply", "--plan", str(plan_file), "--patch", str(early_patch)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(res_early.returncode, 2)
+            self.assertIn("Sweep 1 has not run yet", res_early.stderr)
+
+            # Sweep 1A: `dump-prose`
             res_dump = subprocess.run(
-                [sys.executable, str(SCRIPTS_DIR / "concept_sweep.py"), "dump", "--plan", str(plan_file)],
+                [sys.executable, str(SCRIPTS_DIR / "concept_sweep.py"), "dump-prose", "--plan", str(plan_file)],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -480,39 +510,55 @@ class UnmazeTestSuite(unittest.TestCase):
             dump_obj = json.loads(res_dump.stdout)
             self.assertIn("overview.whole_task", dump_obj["prose_slots"])
 
-            # Unknown concept reference in patch -> rejected with exit code 2
-            bad_patch = tmp_path / "bad.json"
-            bad_patch.write_text(
-                json.dumps({"rewrites": {"overview.before_state": "Calls [[ghost-id|something]]."}}),
+            # Sweep 1B: `save-candidates` filters `keep: true` vs `keep: false`
+            cands_file = tmp_path / "candidates.json"
+            cands_file.write_text(
+                json.dumps(
+                    {
+                        "candidates": [
+                            {"id": "dedup-badge", "term": "200 deduplicated", "origin": "introduced", "keep": True, "reason": "New task status."},
+                            {"id": "express", "term": "Express", "origin": "existing", "keep": False, "reason": "Generic framework."},
+                        ]
+                    }
+                ),
                 encoding="utf-8",
             )
-            res_bad = subprocess.run(
-                [
-                    sys.executable,
-                    str(SCRIPTS_DIR / "concept_sweep.py"),
-                    "apply",
-                    "--plan",
-                    str(plan_file),
-                    "--patch",
-                    str(bad_patch),
-                ],
+            res_cands = subprocess.run(
+                [sys.executable, str(SCRIPTS_DIR / "concept_sweep.py"), "save-candidates", "--plan", str(plan_file), "--candidates", str(cands_file)],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            self.assertEqual(res_bad.returncode, 2)
+            self.assertEqual(res_cands.returncode, 0, res_cands.stderr)
+            s1_out = json.loads(res_cands.stdout)
+            self.assertEqual(s1_out["kept_count"], 1)
+            self.assertEqual(s1_out["dropped_noise"], ["Express"])
 
-            # Valid patch -> applies cleanly and sets `concept_sweep_completed: true`
+            # Sweep 2 missing explanation for confirmed `dedup-badge` -> rejected with exit code 2!
+            incomplete_patch = tmp_path / "incomplete.json"
+            incomplete_patch.write_text(json.dumps({"concepts": [], "rewrites": {}}), encoding="utf-8")
+            res_inc = subprocess.run(
+                [sys.executable, str(SCRIPTS_DIR / "concept_sweep.py"), "apply", "--plan", str(plan_file), "--patch", str(incomplete_patch)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(res_inc.returncode, 2)
+            self.assertIn("missing its explanation in Sweep 2", res_inc.stderr)
+
+            # Sweep 2 with complete repo-grounded explanation + semantic link -> succeeds!
             good_patch = tmp_path / "good.json"
             good_patch.write_text(
                 json.dumps(
                     {
-                        "new_concepts": [
+                        "concepts": [
                             {
                                 "id": "dedup-badge",
                                 "term": "200 deduplicated",
                                 "origin": "introduced",
+                                "file": "api/routes/webhooks.ts",
                                 "what_it_is": "Short HTTP 200 reply telling the sender we already saw this event.",
+                                "how_it_works": ["**Early return:** Sent on `webhooks.ts` L26 whenever `decision.action !== 'PROCESS'`."],
                             }
                         ],
                         "rewrites": {
@@ -523,22 +569,16 @@ class UnmazeTestSuite(unittest.TestCase):
                 encoding="utf-8",
             )
             res_good = subprocess.run(
-                [
-                    sys.executable,
-                    str(SCRIPTS_DIR / "concept_sweep.py"),
-                    "apply",
-                    "--plan",
-                    str(plan_file),
-                    "--patch",
-                    str(good_patch),
-                ],
+                [sys.executable, str(SCRIPTS_DIR / "concept_sweep.py"), "apply", "--plan", str(plan_file), "--patch", str(good_patch)],
                 capture_output=True,
                 text=True,
                 check=False,
             )
             self.assertEqual(res_good.returncode, 0, res_good.stderr)
             updated_plan = json.loads(plan_file.read_text(encoding="utf-8"))
+            self.assertTrue(updated_plan["concept_candidates_extracted"])
             self.assertTrue(updated_plan["concept_sweep_completed"])
+            self.assertEqual(len(updated_plan["concepts"]), 1)
 
 
 if __name__ == "__main__":

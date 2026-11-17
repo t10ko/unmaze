@@ -8,9 +8,9 @@
    - `overview.whole_task` (required; `tldr` accepted as alias): 1–2 short, super casual sentences explaining **the whole task** (the big picture, even if it spans multiple PRs).
    - `overview.visuals`: Put big-picture red-marked screenshot(s) right on `Overview` whenever UI visuals apply so the reviewer immediately sees what the feature looks like.
    - `overview.this_pr_part` (optional): Include **only** when this PR builds one slice of a bigger task, casually stating what part we built here. Omit completely when this PR implements the whole task!
-3. **Mandatory 2nd-Pass Semantic Concept & Link Sweep (`concept_sweep_completed: true`, exit code `2` on violation):**
-   - `concepts[]` covers **both** new terms/things introduced by this task (`"origin": "introduced"`) **and** existing repo/domain concepts (`"origin": "existing"`).
-   - Before compiling HTML, run `concept_sweep.py dump` -> fresh-eyes pass -> `concept_sweep.py apply` so every semantic mention (`[[concept-id|natural phrase]]`) across every slot is clickable on the spot.
+3. **Mandatory Two-Sweep Concept Pipeline (`concept_candidates_extracted: true` & `concept_sweep_completed: true`, exit code `2` on violation):**
+   - **Sweep 1 (`concept_sweep.py dump-prose` -> `save-candidates`):** A cold prose-only reader extracts candidate terms from the written text and marks `"keep": true` (real task-introduced or repo concepts) vs. `"keep": false` (generic tech noise).
+   - **Sweep 2 (`concept_sweep.py apply`):** A repo-grounded pass looks up the actual code/diff for **only** the `keep: true` concepts, writes short casual explanations (`"origin": "introduced" | "existing"`), and semantically wraps `[[concept-id|natural phrase]]` across `prose_slots`.
 4. **100% Changed-Line Coverage (exit code `2` on violation):** Every changed (`+`/`−`) line in every hunk (`H001`..`HNNN`) MUST be claimed **exactly once** across `steps[*].hunk_ids` and `mechanical.groups[*].hunk_ids` (using whole-hunk `"H007"` or line-slice `"H007:1-34,52"` syntax).
 5. **Mandatory Red-Marked Screenshots (Frontend AND Backend PRs, exit code `2` on violation):**
    - Every visual card with `src` MUST exist on disk (or be a valid `data:`/`https:` URL) and MUST include at least one red mark (`circle`, `arrow`, or `box`) inside `annotations[]`.
@@ -42,6 +42,7 @@
       }
     ]
   },
+  "concept_candidates_extracted": true,
   "concept_sweep_completed": true,
   "concepts": [
     {

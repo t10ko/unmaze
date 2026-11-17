@@ -34,6 +34,49 @@
   },
   "concepts": [
     {
+      "id": "claimed-lease",
+      "term": "60s Lease",
+      "origin": "introduced",
+      "aliases": [
+        "CLAIMED",
+        "lease_expires_at"
+      ],
+      "file": "services/idempotency/store.ts",
+      "what_it_is": "Short 60-second lock timer we put on a webhook ID while a worker is running it.",
+      "how_it_works": [
+        "**Crash recovery:** If a worker dies mid-request, `lease_expires_at` passes after 60s so the next retry can steal the lock and finish.",
+        "**Fast rollback:** If a handler throws normally, `releaseClaim()` deletes the lock right away instead of waiting 60s."
+      ],
+      "pr_impact": "Brand-new concept introduced by this task so crashed workers never block retries forever.",
+      "related_steps": [
+        "step-1",
+        "step-2",
+        "step-3",
+        "step-4"
+      ]
+    },
+    {
+      "id": "idempotency-store",
+      "term": "PostgresIdempotencyStore",
+      "origin": "introduced",
+      "aliases": [
+        "IdempotencyStore",
+        "webhook_idempotency_keys"
+      ],
+      "file": "services/idempotency/store.ts",
+      "what_it_is": "New Postgres lock helper that tracks whether a `(provider, event_id)` webhook is running or done.",
+      "how_it_works": [
+        "**One SQL round-trip:** Uses `INSERT ... ON CONFLICT DO UPDATE` so checking and locking happen together without race conditions.",
+        "**Crash recovery:** Uses a 60-second `CLAIMED` timer so another worker can take over if a pod dies mid-request."
+      ],
+      "pr_impact": "Brand-new helper we build in Chapter 1 and plug into the route in Chapter 2.",
+      "related_steps": [
+        "step-1",
+        "step-2",
+        "step-3"
+      ]
+    },
+    {
       "id": "webhook-dispatcher",
       "term": "WebhookDispatcher",
       "origin": "existing",
@@ -68,50 +111,8 @@
       "pr_impact": "Now rejects missing IDs with `400`, checks `PostgresIdempotencyStore` before running the webhook, and frees the lock if dispatch crashes.",
       "related_steps": [
         "step-4"
-      ]
-    },
-    {
-      "id": "idempotency-store",
-      "term": "PostgresIdempotencyStore",
-      "origin": "introduced",
-      "aliases": [
-        "IdempotencyStore",
-        "webhook_idempotency_keys"
       ],
-      "file": "services/idempotency/store.ts",
-      "what_it_is": "New Postgres lock helper that tracks whether a `(provider, event_id)` webhook is running or done.",
-      "how_it_works": [
-        "**One SQL round-trip:** Uses `INSERT ... ON CONFLICT DO UPDATE` so checking and locking happen together without race conditions.",
-        "**Crash recovery:** Uses a 60-second `CLAIMED` timer so another worker can take over if a pod dies mid-request."
-      ],
-      "pr_impact": "Brand-new helper we build in Chapter 1 and plug into the route in Chapter 2.",
-      "related_steps": [
-        "step-1",
-        "step-2",
-        "step-3"
-      ]
-    },
-    {
-      "id": "claimed-lease",
-      "term": "60s Lease",
-      "origin": "introduced",
-      "aliases": [
-        "CLAIMED",
-        "lease_expires_at"
-      ],
-      "file": "services/idempotency/store.ts",
-      "what_it_is": "Short 60-second lock timer we put on a webhook ID while a worker is running it.",
-      "how_it_works": [
-        "**Crash recovery:** If a worker dies mid-request, `lease_expires_at` passes after 60s so the next retry can steal the lock and finish.",
-        "**Fast rollback:** If a handler throws normally, `releaseClaim()` deletes the lock right away instead of waiting 60s."
-      ],
-      "pr_impact": "Brand-new concept introduced by this task so crashed workers never block retries forever.",
-      "related_steps": [
-        "step-1",
-        "step-2",
-        "step-3",
-        "step-4"
-      ]
+      "origin": "existing"
     },
     {
       "id": "payments-admin-console",
@@ -387,5 +388,6 @@
       }
     ]
   },
-  "concept_sweep_completed": true
+  "concept_sweep_completed": true,
+  "concept_candidates_extracted": true
 }

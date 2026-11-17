@@ -1,6 +1,6 @@
 {
   "name": "unmaze",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Claude Code skill that turns sprawling AI-generated PRs into a shareable, step-by-step review guide in human reading order—not A-to-Z file diffs.",
   "author": {
     "name": "Tigran Atayan",
