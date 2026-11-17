@@ -327,6 +327,39 @@ def compute_hunk_changed_anchors(hunk: dict[str, Any]) -> dict[int, int]:
     return anchors
 
 
+CIRCLED_NUMERALS = ("①", "②", "③", "④", "⑤")
+
+
+def parse_line_ranges(range_part: str, context_label: str = "") -> list[tuple[int, int]]:
+    """Parse `'10-25,40'` into `[(10, 25), (40, 40)]`."""
+    ctx_suffix = f" in `{context_label}`" if context_label else ""
+    ranges: list[tuple[int, int]] = []
+    for piece in str(range_part).split(","):
+        tok = piece.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            lo_s, hi_s = tok.split("-", 1)
+            try:
+                lo, hi = int(lo_s.strip()), int(hi_s.strip())
+            except ValueError as exc:
+                raise ValueError(f"Invalid line range `{tok}`{ctx_suffix}.") from exc
+            if lo <= 0 or hi < lo:
+                raise ValueError(f"Invalid line range `{tok}`{ctx_suffix}.")
+            ranges.append((lo, hi))
+        else:
+            try:
+                ln = int(tok)
+            except ValueError as exc:
+                raise ValueError(f"Invalid line number `{tok}`{ctx_suffix}.") from exc
+            if ln <= 0:
+                raise ValueError(f"Invalid line number `{tok}`{ctx_suffix}.")
+            ranges.append((ln, ln))
+    if not ranges:
+        raise ValueError(f"Empty line range{ctx_suffix}.")
+    return ranges
+
+
 def parse_hunk_spec(raw_spec: str) -> tuple[str, list[tuple[int, int]] | None]:
     """Parse `'H007'` or `'H007:1-31,52'` into `(hunk_id, ranges_or_None)`."""
     spec = str(raw_spec).strip()
@@ -339,26 +372,7 @@ def parse_hunk_spec(raw_spec: str) -> tuple[str, list[tuple[int, int]] | None]:
     range_part = m.group(2)
     if not range_part:
         return hid, None
-
-    ranges: list[tuple[int, int]] = []
-    for piece in range_part.split(","):
-        tok = piece.strip()
-        if not tok:
-            continue
-        if "-" in tok:
-            lo_s, hi_s = tok.split("-", 1)
-            lo, hi = int(lo_s.strip()), int(hi_s.strip())
-            if lo <= 0 or hi < lo:
-                raise ValueError(f"Invalid line range `{tok}` in `{raw_spec}`.")
-            ranges.append((lo, hi))
-        else:
-            ln = int(tok)
-            if ln <= 0:
-                raise ValueError(f"Invalid line number `{tok}` in `{raw_spec}`.")
-            ranges.append((ln, ln))
-    if not ranges:
-        raise ValueError(f"Empty line range in `{raw_spec}`.")
-    return hid, ranges
+    return hid, parse_line_ranges(range_part, raw_spec)
 
 
 def match_slice_rows(
@@ -1135,8 +1149,72 @@ def validate_and_normalize_plan(
         for spec in raw_specs:
             item = claim_spec(str(spec), sid, idx)
             if item:
+                item["_highlights"] = []
                 parsed_slices.append(item)
         step["_slices"] = parsed_slices
+
+        # Validate optional interactive `diff_highlights` (max 5 per hunk card, non-overlapping)
+        raw_hls = step.get("diff_highlights")
+        if raw_hls is not None:
+            if not isinstance(raw_hls, list):
+                errors.append(f"`steps[{sid}].diff_highlights` must be an array if provided.")
+            else:
+                slices_by_hid: dict[str, list[dict[str, Any]]] = {}
+                for sl_obj in parsed_slices:
+                    slices_by_hid.setdefault(sl_obj["hunk_id"], []).append(sl_obj)
+                seen_hl_lines: dict[str, set[int]] = {}
+                hl_counts: dict[str, int] = {}
+                for hl_idx, hl in enumerate(raw_hls):
+                    if not isinstance(hl, dict):
+                        errors.append(f"`steps[{sid}].diff_highlights[{hl_idx}]` must be an object.")
+                        continue
+                    hl_hid = str(hl.get("hunk_id") or "").strip()
+                    if not hl_hid and len(parsed_slices) == 1:
+                        hl_hid = parsed_slices[0]["hunk_id"]
+                    if hl_hid not in slices_by_hid:
+                        errors.append(
+                            f"`steps[{sid}].diff_highlights[{hl_idx}]` references hunk `{hl_hid}` "
+                            f"which is not in `{sid}.hunk_ids`."
+                        )
+                        continue
+                    hl_counts[hl_hid] = hl_counts.get(hl_hid, 0) + 1
+                    if hl_counts[hl_hid] > 5:
+                        errors.append(
+                            f"`steps[{sid}].diff_highlights` has >5 blocks on `{hl_hid}`. "
+                            f"Cap highlights at <=5 key logical chunks per diff card so you don't overwhelm the reviewer."
+                        )
+                        continue
+                    hl_title = str(hl.get("title") or "").strip()
+                    hl_expl = str(hl.get("explanation") or "").strip()
+                    if not hl_title or not hl_expl:
+                        errors.append(
+                            f"`steps[{sid}].diff_highlights[{hl_idx}]` requires non-empty `title` and `explanation`."
+                        )
+                        continue
+                    raw_ln_spec = str(hl.get("lines") or "").strip()
+                    try:
+                        hl_ranges = parse_line_ranges(raw_ln_spec, f"steps[{sid}].diff_highlights[{hl_idx}]")
+                    except ValueError as exc:
+                        errors.append(str(exc))
+                        continue
+                    expanded_lns = {ln_no for lo, hi in hl_ranges for ln_no in range(lo, hi + 1)}
+                    claimed_set = seen_hl_lines.setdefault(hl_hid, set())
+                    overlap = sorted(claimed_set & expanded_lns)
+                    if overlap:
+                        errors.append(
+                            f"`steps[{sid}].diff_highlights[{hl_idx}]` overlaps already-highlighted line(s) "
+                            f"{overlap[:5]} on `{hl_hid}`."
+                        )
+                        continue
+                    claimed_set.update(expanded_lns)
+                    slices_by_hid[hl_hid][0]["_highlights"].append(
+                        {
+                            "title": hl_title,
+                            "explanation": hl_expl,
+                            "lines_raw": raw_ln_spec,
+                            "ranges": hl_ranges,
+                        }
+                    )
 
     mechanical = plan.get("mechanical") or {}
     if not isinstance(mechanical, dict):
@@ -1550,6 +1628,7 @@ def render_code_row_html(
     content: str,
     lang: str,
     extra_attrs: str = "",
+    trailing_html: str = "",
 ) -> str:
     old_s = str(old_line) if old_line is not None else ""
     new_s = str(new_line) if new_line is not None else ""
@@ -1560,6 +1639,7 @@ def render_code_row_html(
         f'<span class="ln" aria-hidden="true">{esc(new_s)}</span>'
         f'<span class="sig" aria-hidden="true">{sig}</span>'
         f'<span class="code-txt">{highlighted}</span>'
+        f"{trailing_html}"
         f"</span>"
     )
 
@@ -1600,8 +1680,33 @@ def render_timeline_slice_card_html(
     win_start = max(0, first_act - 3)
     win_end = min(len(eval_rows) - 1, last_act + 3) if eval_rows else -1
 
+    # Compute effective 1-based step line for each row (attaching `del` rows to the replacement `new_line` below)
+    eff_lines: list[int] = [1] * len(eval_rows)
+    next_known_nl: int | None = None
+    for r_i in range(len(eval_rows) - 1, -1, -1):
+        r_nl = eval_rows[r_i].get("new_line")
+        if r_nl is not None:
+            next_known_nl = int(r_nl)
+            eff_lines[r_i] = next_known_nl
+        elif next_known_nl is not None:
+            eff_lines[r_i] = next_known_nl
+        else:
+            eff_lines[r_i] = int(eval_rows[r_i].get("old_line") or 1)
+
+    slice_highlights: list[dict[str, Any]] = slice_item.get("_highlights") or []
+    if slice_highlights and eval_rows:
+        for hl in slice_highlights:
+            matched_eval_idxs = [
+                i for i, eln in enumerate(eff_lines)
+                if any(lo <= eln <= hi for lo, hi in hl["ranges"])
+            ]
+            if matched_eval_idxs:
+                win_start = min(win_start, matched_eval_idxs[0])
+                win_end = max(win_end, matched_eval_idxs[-1])
+
     ctx_before = eval_rows[max(0, win_start - 60) : win_start]
     main_window = eval_rows[win_start : win_end + 1] if win_end >= win_start else []
+    main_eff_lines = eff_lines[win_start : win_end + 1] if win_end >= win_start else []
     ctx_after = eval_rows[win_end + 1 : min(len(eval_rows), win_end + 1 + 60)]
 
     # File-at-this-step view (`F^(t)`: every non-deleted line currently in the file at Step `t`)
@@ -1716,8 +1821,34 @@ def render_timeline_slice_card_html(
             f"Show less</button></div>"
         )
 
+    # Map interactive diff_highlights onto `main_window` rows
+    row_hl_map: dict[int, dict[str, Any]] = {}
+    resolved_highlights: list[dict[str, Any]] = []
+    for raw_hl in slice_highlights:
+        matched_m_idxs = [
+            m_i for m_i, eln in enumerate(main_eff_lines)
+            if any(lo <= eln <= hi for lo, hi in raw_hl["ranges"])
+        ]
+        if not matched_m_idxs:
+            continue
+        seq_idx = len(resolved_highlights)
+        num_sym = CIRCLED_NUMERALS[seq_idx] if seq_idx < len(CIRCLED_NUMERALS) else f"#{seq_idx + 1}"
+        hl_uid = f"{card_uid}-hl{seq_idx + 1}"
+        hl_entry = {
+            "uid": hl_uid,
+            "num": num_sym,
+            "title": raw_hl["title"],
+            "explanation": raw_hl["explanation"],
+            "lines_raw": raw_hl["lines_raw"],
+            "start_m_idx": matched_m_idxs[0],
+            "end_m_idx": matched_m_idxs[-1],
+        }
+        resolved_highlights.append(hl_entry)
+        for m_i in range(matched_m_idxs[0], matched_m_idxs[-1] + 1):
+            row_hl_map[m_i] = hl_entry
+
     main_rows_html: list[str] = []
-    for ln in main_window:
+    for m_idx, ln in enumerate(main_window):
         kind = ln["kind"]
         if kind == "add":
             sig, cls = "+", "dl-add"
@@ -1728,6 +1859,19 @@ def render_timeline_slice_card_html(
             cls = "dl-ctx dl-past" if ln.get("from_earlier_step") else "dl-ctx"
         else:
             sig, cls = " ", "dl-meta"
+
+        extra_attrs = ""
+        hl_marker = ""
+        hl_hit = row_hl_map.get(m_idx)
+        if hl_hit:
+            cls += " dl-has-hl"
+            if m_idx == hl_hit["start_m_idx"]:
+                cls += " dl-hl-start"
+                hl_marker = f'<span class="dl-hl-marker" aria-hidden="true">{esc(hl_hit["num"])}</span>'
+            if m_idx == hl_hit["end_m_idx"]:
+                cls += " dl-hl-end"
+            extra_attrs = f' data-hl-id="{esc(hl_hit["uid"])}"'
+
         main_rows_html.append(
             render_code_row_html(
                 cls=cls,
@@ -1736,6 +1880,8 @@ def render_timeline_slice_card_html(
                 sig=sig,
                 content=ln.get("content", ""),
                 lang=lang if kind != "meta" else "plain",
+                extra_attrs=extra_attrs,
+                trailing_html=hl_marker,
             )
         )
 
@@ -1761,18 +1907,85 @@ def render_timeline_slice_card_html(
             f"</div>"
         )
 
+    hl_hint_html = ""
+    hl_strip_html = ""
+    if resolved_highlights:
+        strip_btns = "".join(
+            f'<button type="button" class="dl-hl-pill" data-hl-trigger="{esc(h_e["uid"])}" '
+            f'aria-expanded="false" aria-controls="hl-note-{esc(h_e["uid"])}">'
+            f'<span class="dl-hl-num" aria-hidden="true">{esc(h_e["num"])}</span>'
+            f'<span>{esc(h_e["title"])}</span>'
+            f'<span class="dl-hl-ln">L{esc(h_e["lines_raw"])}</span></button>'
+            for h_e in resolved_highlights
+        )
+        hl_strip_html = (
+            f'<div class="hl-chip-strip">'
+            f'<span class="hl-strip-lbl">Click block to explain:</span>'
+            f"{strip_btns}</div>"
+        )
+
     caption_id = f"cap-{esc(card_uid)}"
     note_html = f'<p class="hunk-note">{fmt_prose(note, concept_lookup)}</p>' if note else ""
-    diff_view_html = (
-        f'<div class="diff-view">'
-        f"{before_bar_html}"
-        f'<pre class="diff-pre" role="region" aria-labelledby="{caption_id}" tabindex="0">'
-        f'<code class="diff-code">{before_rows_html}{"".join(main_rows_html)}{after_rows_html}</code>'
-        f"</pre>"
-        f"{after_bar_html}"
-        f"</div>"
-        f"{snapshot_block_html}"
-    )
+    if resolved_highlights:
+        hl_cards: list[str] = []
+        total_hl = len(resolved_highlights)
+        for h_pos, hl_entry in enumerate(resolved_highlights):
+            prev_hl_btn = (
+                f'<button type="button" class="ctx-btn" data-hl-switch="{esc(resolved_highlights[h_pos - 1]["uid"])}">← Prev part</button>'
+                if h_pos > 0
+                else "<span></span>"
+            )
+            next_hl_btn = (
+                f'<button type="button" class="ctx-btn" data-hl-switch="{esc(resolved_highlights[h_pos + 1]["uid"])}">Next part →</button>'
+                if h_pos + 1 < total_hl
+                else "<span></span>"
+            )
+            nav_row = (
+                f'<div class="hl-note-nav">{prev_hl_btn}{next_hl_btn}</div>'
+                if total_hl > 1
+                else ""
+            )
+            hl_cards.append(
+                f'<div class="hl-note-card" id="hl-note-{esc(hl_entry["uid"])}" data-hl-note="{esc(hl_entry["uid"])}" hidden>'
+                f'<div class="hl-note-head">'
+                f'<div class="hl-note-heading">'
+                f'<span class="hl-note-num" aria-hidden="true">{esc(hl_entry["num"])}</span>'
+                f'<strong>{esc(hl_entry["title"])}</strong>'
+                f'<code class="hl-note-lines">L{esc(hl_entry["lines_raw"])}</code>'
+                f"</div>"
+                f'<button type="button" class="hl-close-btn" data-hl-close="{esc(hl_entry["uid"])}" aria-label="Close block explanation">×</button>'
+                f"</div>"
+                f'<p class="hl-note-body">{fmt_prose(hl_entry["explanation"], concept_lookup)}</p>'
+                f"{nav_row}"
+                f"</div>"
+            )
+        diff_view_html = (
+            f"{hl_strip_html}"
+            f'<div class="diff-view diff-view-hl">'
+            f'<div class="diff-code-col">'
+            f"{before_bar_html}"
+            f'<pre class="diff-pre" role="region" aria-labelledby="{caption_id}" tabindex="0">'
+            f'<code class="diff-code">{before_rows_html}{"".join(main_rows_html)}{after_rows_html}</code>'
+            f"</pre>"
+            f"{after_bar_html}"
+            f"</div>"
+            f'<aside class="hl-side-rail" hidden aria-label="Highlighted code explanation">'
+            f'{"".join(hl_cards)}'
+            f"</aside>"
+            f"</div>"
+            f"{snapshot_block_html}"
+        )
+    else:
+        diff_view_html = (
+            f'<div class="diff-view">'
+            f"{before_bar_html}"
+            f'<pre class="diff-pre" role="region" aria-labelledby="{caption_id}" tabindex="0">'
+            f'<code class="diff-code">{before_rows_html}{"".join(main_rows_html)}{after_rows_html}</code>'
+            f"</pre>"
+            f"{after_bar_html}"
+            f"</div>"
+            f"{snapshot_block_html}"
+        )
 
     area_attr = f' data-area-id="{esc(area_id)}"' if area_id else ""
     if collapsed:
@@ -1782,6 +1995,7 @@ def render_timeline_slice_card_html(
       <code class="hunk-filepath" id="{caption_id}">{path_display}</code>
       {area_tag_html}
       {timeline_tag}
+      {hl_hint_html}
     </div>
     <div class="hunk-right">{step_file_btn_html}{stats_html}{link_html}</div>
   </div>
@@ -1798,6 +2012,7 @@ def render_timeline_slice_card_html(
       <code class="hunk-filepath" id="{caption_id}">{path_display}</code>
       {area_tag_html}
       {timeline_tag}
+      {hl_hint_html}
     </div>
     <div class="hunk-right">{step_file_btn_html}{stats_html}{link_html}</div>
   </div>
@@ -3309,7 +3524,7 @@ def build_html_artifact(
     }}
 
     .steps-stack {{
-      max-width: 880px;
+      max-width: 1140px;
       margin: 0 auto;
       display: flex;
       flex-direction: column;
@@ -3317,6 +3532,7 @@ def build_html_artifact(
     }}
 
     .step-card {{
+      container-type: inline-size;
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -3338,6 +3554,7 @@ def build_html_artifact(
     }}
 
     .lead-text {{
+      max-width: 80ch;
       margin: 0 0 0.95rem;
       font-size: 0.95rem;
     }}
@@ -3872,12 +4089,271 @@ def build_html_artifact(
     }}
 
     .diff-code {{ display: block; min-width: max-content; white-space: normal; }}
-    .dl {{ display: flex; padding: 0 0.75rem 0 0.25rem; }}
+    .dl {{ display: flex; align-items: center; padding: 0 0.75rem 0 0.25rem; }}
     .dl[hidden] {{ display: none; }}
-    .dl-add {{ background: var(--add-bg); }}
-    .dl-del {{ background: var(--del-bg); }}
-    .dl-exp {{ background: var(--subtle); opacity: 0.88; }}
+    .dl-ctx {{ background-color: var(--surface); }}
+    .dl-add {{ background-color: var(--add-bg); }}
+    .dl-del {{ background-color: var(--del-bg); }}
+    .dl-exp {{ background-color: var(--subtle); opacity: 0.88; }}
     .dl-meta {{ color: var(--muted); font-style: italic; }}
+
+    /* Interactive Diff-Block Highlights (Translucent Overlay Over Red/Green/Gray + Side Card) */
+    .hl-hint-badge {{
+      font-size: 0.68rem;
+      font-weight: 640;
+      padding: 0.08rem 0.44rem;
+      border-radius: 999px;
+      border: 1px solid var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
+      white-space: nowrap;
+    }}
+
+    .dl-has-hl {{
+      cursor: pointer;
+      box-shadow: inset 3px 0 0 rgba(88, 166, 255, 0.52);
+    }}
+
+    @media (forced-colors: active) {{
+      .dl-has-hl {{ border-inline-start: 3px solid Highlight; }}
+    }}
+
+    .dl-has-hl.is-hl-hover {{
+      box-shadow: inset 4px 0 0 var(--accent);
+      background-image: linear-gradient(rgba(56, 139, 253, 0.16), rgba(56, 139, 253, 0.16));
+    }}
+
+    .dl-has-hl.is-hl-active {{
+      box-shadow: inset 4px 0 0 var(--accent);
+      background-image: linear-gradient(rgba(56, 139, 253, 0.26), rgba(56, 139, 253, 0.26));
+    }}
+
+    @supports (color: color-mix(in oklab, white, black)) {{
+      .dl-has-hl {{
+        box-shadow: inset 3px 0 0 color-mix(in oklab, var(--accent), transparent 42%);
+      }}
+      .dl-ctx.is-hl-hover {{
+        background-image: none;
+        background-color: color-mix(in oklab, var(--surface), var(--accent) 14%);
+      }}
+      .dl-add.is-hl-hover {{
+        background-image: none;
+        background-color: color-mix(in oklab, var(--add-bg), var(--accent) 20%);
+      }}
+      .dl-del.is-hl-hover {{
+        background-image: none;
+        background-color: color-mix(in oklab, var(--del-bg), var(--accent) 20%);
+      }}
+      .dl-ctx.is-hl-active {{
+        background-image: none;
+        background-color: color-mix(in oklab, var(--surface), var(--accent) 22%);
+      }}
+      .dl-add.is-hl-active {{
+        background-image: none;
+        background-color: color-mix(in oklab, var(--add-bg), var(--accent) 28%);
+      }}
+      .dl-del.is-hl-active {{
+        background-image: none;
+        background-color: color-mix(in oklab, var(--del-bg), var(--accent) 28%);
+      }}
+    }}
+
+    .hl-chip-strip {{
+      padding: 0.38rem 0.75rem;
+      background: var(--subtle);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.4rem;
+    }}
+
+    .hl-strip-lbl {{
+      font-size: 0.72rem;
+      font-weight: 620;
+      color: var(--muted);
+      margin-inline-end: 0.15rem;
+    }}
+
+    .dl-hl-pill {{
+      appearance: none;
+      border: 1px solid var(--accent);
+      background: var(--surface);
+      color: var(--accent);
+      border-radius: 999px;
+      padding: 0.12rem 0.54rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 0.72rem;
+      font-weight: 650;
+      line-height: 1.35;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      white-space: nowrap;
+    }}
+
+    .dl-hl-ln {{
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 0.66rem;
+      opacity: 0.75;
+    }}
+
+    .dl-hl-pill.is-hl-hover,
+    .dl-hl-pill[aria-expanded="true"] {{
+      background: var(--accent);
+      color: #ffffff;
+    }}
+
+    :root:has(> head > meta[name="color-scheme"][content="dark"]) .dl-hl-pill.is-hl-hover,
+    :root:has(> head > meta[name="color-scheme"][content="dark"]) .dl-hl-pill[aria-expanded="true"] {{
+      color: #0b0f16;
+    }}
+
+    @media (prefers-color-scheme: dark) {{
+      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .dl-hl-pill.is-hl-hover,
+      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .dl-hl-pill[aria-expanded="true"] {{
+        color: #0b0f16;
+      }}
+    }}
+
+    .dl-hl-marker {{
+      margin-inline-start: 0.55rem;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 0.72rem;
+      font-weight: 750;
+      color: var(--accent);
+      user-select: none;
+    }}
+
+    /* Side-Margin Explanation Rail (Never Covers Code) */
+    .hl-side-rail[hidden], .hl-note-card[hidden] {{ display: none; }}
+
+    .diff-view-hl.has-active-hl {{
+      display: flex;
+      flex-direction: column;
+    }}
+
+    .diff-view-hl.has-active-hl .hl-side-rail {{
+      background: var(--subtle);
+      border-top: 1px solid var(--border);
+      padding: 0.55rem;
+    }}
+
+    @media (min-width: 960px) {{
+      .diff-view-hl.has-active-hl {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 264px;
+        align-items: stretch;
+      }}
+      .diff-view-hl.has-active-hl .diff-code-col {{
+        min-width: 0;
+        border-inline-end: 1px solid var(--border);
+      }}
+      .diff-view-hl.has-active-hl .hl-side-rail {{
+        border-top: 0;
+      }}
+    }}
+
+    @supports (container-type: inline-size) {{
+      @media (min-width: 960px) {{
+        .diff-view-hl.has-active-hl {{
+          display: flex;
+        }}
+        .diff-view-hl.has-active-hl .diff-code-col {{
+          border-inline-end: 0;
+        }}
+        .diff-view-hl.has-active-hl .hl-side-rail {{
+          border-top: 1px solid var(--border);
+        }}
+      }}
+      @container (min-width: 680px) {{
+        .diff-view-hl.has-active-hl {{
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) 264px;
+          align-items: stretch;
+        }}
+        .diff-view-hl.has-active-hl .diff-code-col {{
+          min-width: 0;
+          border-inline-end: 1px solid var(--border);
+        }}
+        .diff-view-hl.has-active-hl .hl-side-rail {{
+          border-top: 0;
+        }}
+      }}
+    }}
+
+    .hl-note-card {{
+      background: var(--surface);
+      border: 1.5px solid var(--accent);
+      border-radius: 8px;
+      padding: 0.65rem 0.75rem;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }}
+
+    .hl-note-head {{
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.4rem;
+      margin-bottom: 0.4rem;
+    }}
+
+    .hl-note-heading {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.32rem;
+      font-size: 0.81rem;
+    }}
+
+    .hl-note-num {{
+      color: var(--accent);
+      font-weight: 750;
+    }}
+
+    .hl-note-lines {{
+      font-size: 0.69rem;
+      padding: 0.05rem 0.32rem;
+      border-radius: 4px;
+      background: var(--subtle);
+      color: var(--muted);
+    }}
+
+    .hl-close-btn {{
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 1rem;
+      line-height: 1;
+      padding: 0.05rem 0.25rem;
+      cursor: pointer;
+      border-radius: 4px;
+    }}
+
+    .hl-close-btn:hover {{
+      background: var(--subtle);
+      color: var(--text);
+    }}
+
+    .hl-note-body {{
+      margin: 0;
+      font-size: 0.82rem;
+      line-height: 1.48;
+      color: var(--text);
+    }}
+
+    .hl-note-nav {{
+      margin-top: 0.5rem;
+      padding-top: 0.4rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.74rem;
+    }}
 
     .ln {{
       inline-size: 2.75rem;
@@ -3940,7 +4416,7 @@ def build_html_artifact(
     .done-badge {{ color: var(--add-fg); font-weight: 600; }}
 
     .foot-hint {{
-      max-width: 880px;
+      max-width: 1020px;
       margin: 1.5rem auto 0;
       text-align: center;
       font-size: 0.75rem;
@@ -4418,7 +4894,118 @@ def build_html_artifact(
         conceptDialog.showModal();
       }}
 
+      function setHoveredHighlight(hlId) {{
+        document.querySelectorAll(".is-hl-hover").forEach((el) => {{
+          const eid = el.getAttribute("data-hl-id") || el.getAttribute("data-hl-trigger");
+          if (eid !== hlId) el.classList.remove("is-hl-hover");
+        }});
+        if (hlId) {{
+          document.querySelectorAll(`[data-hl-id="${{hlId}}"], [data-hl-trigger="${{hlId}}"]`).forEach((el) => {{
+            el.classList.add("is-hl-hover");
+          }});
+        }}
+      }}
+
+      document.addEventListener("pointerover", (event) => {{
+        const hlEl = event.target.closest("[data-hl-id], [data-hl-trigger]");
+        const hlId = hlEl ? (hlEl.getAttribute("data-hl-id") || hlEl.getAttribute("data-hl-trigger")) : "";
+        setHoveredHighlight(hlId);
+      }});
+
+      document.addEventListener("pointerout", (event) => {{
+        const hlEl = event.target.closest("[data-hl-id], [data-hl-trigger]");
+        if (!hlEl) return;
+        const related = event.relatedTarget && event.relatedTarget.closest
+          ? event.relatedTarget.closest("[data-hl-id], [data-hl-trigger]")
+          : null;
+        if (!related) setHoveredHighlight("");
+      }});
+
+      function selectDiffHighlight(card, hlId, forceOpen = false) {{
+        if (!card) return;
+        const diffView = card.querySelector(".diff-view-hl");
+        const sideRail = card.querySelector(".hl-side-rail");
+        if (!diffView || !sideRail) return;
+
+        const curActive = diffView.getAttribute("data-active-hl") || "";
+        const nextActive = (!forceOpen && curActive === hlId) ? "" : hlId;
+        diffView.setAttribute("data-active-hl", nextActive);
+
+        card.querySelectorAll(".dl-has-hl").forEach((row) => {{
+          row.classList.toggle("is-hl-active", Boolean(nextActive) && row.getAttribute("data-hl-id") === nextActive);
+        }});
+        card.querySelectorAll("[data-hl-trigger]").forEach((btn) => {{
+          btn.setAttribute("aria-expanded", String(Boolean(nextActive) && btn.getAttribute("data-hl-trigger") === nextActive));
+        }});
+
+        const notes = Array.from(sideRail.querySelectorAll(".hl-note-card"));
+        notes.forEach((n) => {{
+          n.hidden = n.getAttribute("data-hl-note") !== nextActive;
+          n.style.marginTop = "0px";
+        }});
+
+        if (!nextActive) {{
+          sideRail.hidden = true;
+          diffView.classList.remove("has-active-hl");
+          return;
+        }}
+
+        sideRail.hidden = false;
+        diffView.classList.add("has-active-hl");
+
+        // Align side card vertically next to the highlighted lines when in side-by-side grid mode
+        const activeNote = sideRail.querySelector(`[data-hl-note="${{nextActive}}"]`);
+        const startRow = card.querySelector(`.dl-hl-start[data-hl-id="${{nextActive}}"]`);
+        if (activeNote && startRow && getComputedStyle(diffView).display === "grid") {{
+          const railRect = sideRail.getBoundingClientRect();
+          const rowRect = startRow.getBoundingClientRect();
+          const noteRect = activeNote.getBoundingClientRect();
+          const desired = Math.max(0, rowRect.top - railRect.top - 8);
+          const maxTop = Math.max(0, railRect.height - noteRect.height - 12);
+          activeNote.style.marginTop = `${{Math.round(Math.min(desired, maxTop))}}px`;
+        }}
+      }}
+
       document.addEventListener("click", (event) => {{
+        // Interactive Diff-Block Highlight close / switch / toggle
+        const closeHlBtn = event.target.closest("[data-hl-close]");
+        if (closeHlBtn) {{
+          selectDiffHighlight(closeHlBtn.closest(".hunk-card"), "", false);
+          return;
+        }}
+
+        const switchHlBtn = event.target.closest("[data-hl-switch]");
+        if (switchHlBtn) {{
+          selectDiffHighlight(
+            switchHlBtn.closest(".hunk-card"),
+            switchHlBtn.getAttribute("data-hl-switch") || "",
+            true
+          );
+          return;
+        }}
+
+        const pillHlBtn = event.target.closest("[data-hl-trigger]");
+        if (pillHlBtn) {{
+          selectDiffHighlight(
+            pillHlBtn.closest(".hunk-card"),
+            pillHlBtn.getAttribute("data-hl-trigger") || "",
+            false
+          );
+          return;
+        }}
+
+        const rowHl = event.target.closest(".dl-has-hl[data-hl-id]");
+        if (rowHl && !event.target.closest("button, a")) {{
+          const sel = window.getSelection ? window.getSelection() : null;
+          if (sel && !sel.isCollapsed) return;
+          selectDiffHighlight(
+            rowHl.closest(".hunk-card"),
+            rowHl.getAttribute("data-hl-id") || "",
+            false
+          );
+          return;
+        }}
+
         // Scope tree expand/collapse & "Only" quick-solo buttons
         const expBtn = event.target.closest(".scope-exp-btn");
         if (expBtn) {{

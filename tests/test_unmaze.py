@@ -357,6 +357,41 @@ class UnmazeTestSuite(unittest.TestCase):
             self.assertNotIn(".sql", lbl)
             self.assertNotIn("/", lbl)
 
+    def test_interactive_diff_highlights_and_anti_noise_guardrails(self) -> None:
+        manifest = self._build_sample_manifest()
+        validated = build_artifact.validate_and_normalize_plan(
+            manifest, copy.deepcopy(self.sample_plan)
+        )
+        rendered = build_artifact.build_html_artifact(
+            manifest, validated, search_dirs=[REPO_ROOT / "examples"]
+        )
+
+        # Sample plan highlights render interactive rows, pills, and non-overlapping side rail
+        self.assertIn('class="diff-view diff-view-hl"', rendered)
+        self.assertIn('class="hl-side-rail"', rendered)
+        self.assertIn("Single-query lease steal", rendered)
+        self.assertIn("Finalize or free lease on error", rendered)
+
+        # >5 highlights on a single hunk card -> rejected by anti-noise guardrail!
+        noisy_plan = copy.deepcopy(self.sample_plan)
+        noisy_plan["steps"][1]["diff_highlights"] = [
+            {"hunk_id": "H007", "lines": str(i), "title": f"Part {i}", "explanation": "Too granular."}
+            for i in range(1, 7)
+        ]
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_noisy:
+            build_artifact.validate_and_normalize_plan(manifest, noisy_plan)
+        self.assertIn(">5 blocks", str(ctx_noisy.exception))
+
+        # Overlapping highlight line ranges on same hunk -> rejected!
+        overlap_plan = copy.deepcopy(self.sample_plan)
+        overlap_plan["steps"][1]["diff_highlights"] = [
+            {"hunk_id": "H007", "lines": "14-22", "title": "A", "explanation": "First."},
+            {"hunk_id": "H007", "lines": "20-26", "title": "B", "explanation": "Overlaps L20-22."},
+        ]
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_ov:
+            build_artifact.validate_and_normalize_plan(manifest, overlap_plan)
+        self.assertIn("overlaps already-highlighted", str(ctx_ov.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

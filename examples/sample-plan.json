@@ -105,6 +105,20 @@
         { "anchor": "Atomic lock", "text": "`ON CONFLICT DO UPDATE` steals an existing row only when `status = 'CLAIMED'` and its 60s lease expired." },
         { "anchor": "Skip signal", "text": "When Postgres returns zero rows, another worker owns or finished the event, so we return `SKIP_IN_FLIGHT_OR_DONE`." }
       ],
+      "diff_highlights": [
+        {
+          "hunk_id": "H007",
+          "lines": "14-29",
+          "title": "Single-query lease steal",
+          "explanation": "Inserts a 60s `CLAIMED` row, or steals an existing row in the same SQL round-trip only when `status = 'CLAIMED'` and `lease_expires_at < NOW()`. Completed events update zero rows."
+        },
+        {
+          "hunk_id": "H007",
+          "lines": "30-33",
+          "title": "Fail-open DB catch",
+          "explanation": "Returns `PROCESS` if Postgres throws so transient DB blips do not drop live customer webhooks."
+        }
+      ],
       "callouts": [
         {
           "kind": "assumption",
@@ -181,6 +195,20 @@
         {
           "kind": "question",
           "text": "If `releaseClaim()` throws during a DB outage inside `catch` (`webhooks.ts` L34), it hides the original error from `WebhookDispatcher`."
+        }
+      ],
+      "diff_highlights": [
+        {
+          "hunk_id": "H002",
+          "lines": "18-27",
+          "title": "Validate ID & skip duplicates",
+          "explanation": "Reads `x-webhook-id` (or `req.body.id`), rejects missing IDs with `400`, and returns `200 deduplicated` immediately whenever `PostgresIdempotencyStore` says another worker owns or finished it."
+        },
+        {
+          "hunk_id": "H002",
+          "lines": "29-36",
+          "title": "Finalize or free lease on error",
+          "explanation": "Replaces the unguarded `dispatchProviderWebhook` call: marks the key `COMPLETED` after `WebhookDispatcher` succeeds, or deletes the `CLAIMED` row in `catch` so the provider's next retry can run."
         }
       ],
       "hunk_ids": ["H003", "H002"]

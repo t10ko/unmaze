@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.4.1"
+  version: "0.5.0"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
@@ -16,6 +16,7 @@ GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at
 - **Arc-style Chapters** (splitting large PRs into ordered chapters—`Chapter 1`, `Chapter 2`—in a clean sidebar),
 - **Top-Bar Role & Area Tree Filter** (2-level `Role Surface -> App Area` filter that dims unrelated chapters and steps so FE, BE, or domain engineers can review just their slice),
 - **Cumulative Timeline File Evolution** (showing each file *as it exists at that step*, slicing large hunks with `H007:1-34,52` so future steps don't leak early),
+- **Interactive Diff-Block Highlights** (hover-tinted code chunks inside large diffs or new files that open a side-margin explanation on click without covering any code),
 - **Clickable Repo Concept Modals** (explaining any touched module or domain term from scratch for an engineer who is new to the repo),
 - **Dynamic Visual Formatting Rotation** in **very simple English**,
 - **Mandatory Red-Marked Screenshots — Even on Backend PRs** (traces backend/API/DB changes to the frontend screen they impact and places red circles, boxes, and arrows showing what the code is for), and
@@ -81,6 +82,7 @@ Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cogniti
 #### B. Cumulative Timeline File Evolution & Sub-Hunk Slicing (`H007:1-34,52`)
 - `build_artifact.py` reconstructs each file **as it exists at Step $N$**: earlier steps are already merged into the file, Step $N$ glows `+`/`−`, and future steps **do not exist in that file yet**.
 - Whenever a single large hunk or new file mixes multiple stages (e.g., types + core method + later lifecycle helpers, or imports + logic), **slice it by line range** (`"H007:1-34,52"` in Step 2, `"H007:35-51"` in Step 3) so the file evolves cleanly step by step along the timeline!
+- When a single step still contains a **large or dense diff (`>= 20` lines, complex function, tricky SQL, or multi-branch handler)** that belongs together in one view, attach **2–5 `diff_highlights`** (`{"hunk_id": "H007", "lines": "14-29", "title": "...", "explanation": "..."}`) on the non-obvious blocks. Hovering tints that block across green/red/gray lines, and clicking opens a side-margin explanation without covering code. **Do NOT overdo it:** skip short/obvious diffs (`< 20` lines, imports, simple types), and cap at `<= 5` blocks per diff card (`build_artifact.py` rejects `> 5`).
 
 #### C. Project Concept Modals (`concepts[]`)
 - Define 3–8 `concepts` for key services, tables, queues, middlewares, or domain terms touched by this PR.

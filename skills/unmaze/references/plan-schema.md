@@ -94,6 +94,20 @@
         { "anchor": "Conflict rule", "text": "`ON CONFLICT DO UPDATE` only steals an existing row if `status = 'CLAIMED'` and its lease expired." },
         { "anchor": "Duplicate path", "text": "If Postgres updates zero rows, another worker owns or finished the event, so we skip it." }
       ],
+      "diff_highlights": [
+        {
+          "hunk_id": "H007",
+          "lines": "14-29",
+          "title": "Single-query lease steal",
+          "explanation": "Inserts a 60s `CLAIMED` row, or steals an existing row in the same SQL round-trip only when its lease expired."
+        },
+        {
+          "hunk_id": "H007",
+          "lines": "30-33",
+          "title": "Fail-open DB catch",
+          "explanation": "Returns `PROCESS` if Postgres throws so transient DB hiccups do not block live webhooks."
+        }
+      ],
       "callouts": [
         {
           "kind": "assumption",
@@ -170,3 +184,7 @@
    - `{"kind": "arrow", "from_x": 60.0, "from_y": 29.0, "to_x": 77.2, "to_y": 41.0, "label": "Short label"}`
    - `{"kind": "box", "x": 12.0, "y": 30.0, "w": 40.0, "h": 18.0, "label": "Short label"}`
    - Always inspect the screenshot with `Read` before writing coordinates so every red mark lands accurately on the target UI element.
+6. **Interactive Diff-Block Highlights (`diff_highlights[]`, optional on dense/large diffs):**
+   - Use ONLY on large new files or dense functions (`>= 20` lines or tricky branching/SQL). Skip trivial/short hunks!
+   - Capped at **<= 5 non-overlapping blocks per hunk card** (`build_artifact.py` fails with exit code `2` if `> 5` or overlapping).
+   - Format: `{"hunk_id": "H007", "lines": "14-29", "title": "2-4 word label", "explanation": "1-2 simple sentences"}`. Hovering tints those lines across green/red/gray rows; clicking opens a side-margin explanation card without covering code.

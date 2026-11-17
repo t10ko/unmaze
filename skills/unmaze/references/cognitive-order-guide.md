@@ -18,6 +18,7 @@ When an AI creates a large new file or big contiguous edit (`H007`, lines `1..18
 - **Slice it across steps** instead of dumping 180 lines in one card!
 - Include closing braces when slicing classes/blocks (e.g., `"H007:1-34,52"` in Step 2 for the class + primary method + closing `}`, then `"H007:35-51"` in Step 3 for secondary helper methods).
 - Because `build_artifact.py` computes cumulative file state $F^{(t)}$, Step 2 will show a clean 35-line class without leaking Step 3's methods early, and Step 3 will show Step 2's code already in place above while adding lines `35..51`.
+- When a single function or new file inside a step is still large or dense (`>= 20` lines of SQL, state logic, or branching) and belongs together in one view, add **2–5 `diff_highlights`** on the tricky line ranges (`"lines": "14-29"`). Do not highlight obvious imports, getters, or short diffs (`< 20` lines).
 
 ---
 

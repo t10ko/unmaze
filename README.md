@@ -4,7 +4,7 @@ AI agents can now generate a 1,500-line pull request across 25 files in two minu
 
 `unmaze` is a Claude Code skill that turns sprawling PR diffs into a **calm, step-by-step interactive review guide**—published as a shareable Artifact you can review yourself or drop straight into a PR description for your team.
 
-![Arc-style stacked chapters, repo concept modals, and timeline file evolution](assets/demo-walkthrough.gif)
+![Arc-style chapters, top-bar area filter, clickable diff-block explanations, and timeline file evolution](assets/demo-walkthrough.gif)
 
 ---
 
@@ -22,7 +22,7 @@ GitHub still dumps changed files in **alphabetical order (`A → Z`)**:
 ## How `unmaze` Makes Large PRs Easy to Understand
 
 1. **Arc-Style Chapters & Role/Area Tree Filter:** Splits multi-part PRs into ordered chapters (`Chapter 1`, `Chapter 2`, ...) in a collapsible Arc sidebar, with a **pronounced top-bar tree filter** (`Frontend`, `Backend & API`, `Database & Contracts` → specific app areas) that dims unrelated chapters and steps so each engineer can review their own slice.
-2. **True Timeline File Evolution:** Files grow step by step along the review timeline—earlier steps are already merged in, the current step glows `+` / `−`, and later steps *do not exist in the file yet* so future changes never leak early.
+2. **True Timeline File Evolution & Clickable Diff Blocks:** Files grow step by step along the review timeline so future changes never leak early—and inside large functions or new files, hovering tricky code blocks tints them smoothly over red/green/gray lines and clicking opens a side-margin explanation without covering a single character of code.
 3. **Click Any Repo Term to Learn It From Scratch:** Don't know what `WebhookDispatcher` does in this project? Click any highlighted concept chip to open a plain-English engineering modal explaining how that part of the codebase works from zero—and jump straight to the lines touching it.
 4. **Simple English & Visual Formatting Rotation:** Enforces short, direct sentences and alternates tables, anchored 1-sentence bullets, and warnings instead of walls of AI prose.
 
@@ -30,7 +30,7 @@ GitHub still dumps changed files in **alphabetical order (`A → Z`)**:
 
 ## Visual Context & Expandable Code
 
-![Annotated Figma/UI screenshots and expandable before/after context](assets/demo-visuals-context.gif)
+![Annotated Figma/UI screenshots, mixed red/green diff-block explanations, and expandable context](assets/demo-visuals-context.gif)
 
 - **Red-marked screenshots—even on backend PRs:** Traces backend, API, and DB changes to the frontend screen they impact and posts screenshots or Figma frames with **red circles, boxes, and arrows** explaining what the code is actually for (enforced at build time).
 - **Expand surrounding lines inline:** Click `↑ Show lines above` / `↓ Show lines below` (`Show less`) or `File at this step` without leaving the guide, and click `PR ↗` to jump to that exact line on GitHub to leave a comment.
