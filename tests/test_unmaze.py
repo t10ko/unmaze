@@ -277,6 +277,45 @@ class UnmazeTestSuite(unittest.TestCase):
             self.assertIsNotNone(code_match)
             self.assertNotIn('</span>\n<span class="dl', code_match.group(1))
 
+    def test_mandatory_red_marked_visual_grounding_gates(self) -> None:
+        manifest = self._build_sample_manifest()
+
+        # 1. Zero visuals and no justification -> MUST fail!
+        no_vis_plan = copy.deepcopy(self.sample_plan)
+        for st in no_vis_plan["steps"]:
+            st.pop("visuals", None)
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_none:
+            build_artifact.validate_and_normalize_plan(manifest, no_vis_plan)
+        self.assertIn("Visual Grounding Check FAILED", str(ctx_none.exception))
+
+        # 2. Screenshot attached WITHOUT red marks (`annotations: []`) -> MUST fail!
+        raw_shot_plan = copy.deepcopy(self.sample_plan)
+        raw_shot_plan["steps"][3]["visuals"][0]["annotations"] = []
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_unmarked:
+            build_artifact.validate_and_normalize_plan(manifest, raw_shot_plan)
+        self.assertIn("zero red marks", str(ctx_unmarked.exception))
+
+        # 3. Missing screenshot file on disk when search_dirs is enforced -> MUST fail!
+        ghost_plan = copy.deepcopy(self.sample_plan)
+        ghost_plan["steps"][3]["visuals"][0]["src"] = "does-not-exist-anywhere.png"
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_ghost:
+            build_artifact.validate_and_normalize_plan(
+                manifest, ghost_plan, search_dirs=[REPO_ROOT / "examples"]
+            )
+        self.assertIn("was not found on disk", str(ctx_ghost.exception))
+
+        # 4. Headless CLI/SDK escape hatch (`no_visuals_justification`) -> succeeds & prints visibly!
+        headless_plan = copy.deepcopy(no_vis_plan)
+        headless_plan["no_visuals_justification"] = (
+            "Checked all callers of `webhooks.ts`; this repo is a headless CLI with zero UI consumers."
+        )
+        validated = build_artifact.validate_and_normalize_plan(manifest, headless_plan)
+        html_out = build_artifact.build_html_artifact(manifest, validated)
+        md_out = build_artifact.build_markdown_summary(manifest, validated)
+        self.assertIn("Why no UI screenshot is attached:", html_out)
+        self.assertIn("headless CLI with zero UI consumers", html_out)
+        self.assertIn("Why no UI screenshot is attached:", md_out)
+
 
 if __name__ == "__main__":
     unittest.main()

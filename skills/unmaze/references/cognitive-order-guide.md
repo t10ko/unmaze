@@ -31,7 +31,16 @@ In the AI coding era, reviewers often did not write the surrounding modules and 
 
 ---
 
-## 4. Simple English & Style Formatting Rotation
+## 4. Always Post Red-Marked Screenshots — Even on Backend PRs
+
+Reviewers grasp backend, API, and database changes 5x faster when they can see **where in the product that data or behavior actually shows up**:
+- **Trace backend -> frontend:** When a PR only edits SQL, services, or API routes, grep for which frontend page, admin table, form, or modal calls that endpoint or renders that state.
+- **Capture & mark in red:** Screenshot that impacted UI (or export its Figma frame), inspect it with `Read`, and place red `circle`, `arrow`, or `box` marks showing *what this backend change is for*.
+- **Never post unmarked screenshots:** Raw screenshots force the reviewer to play "Where's Waldo?". Every screenshot must have red marks pointing right at the impacted area.
+
+---
+
+## 5. Simple English & Style Formatting Rotation
 
 Follow these rules on every sentence in `plan.json`:
 - **Simple everyday English:** Short sentences (`<= 20` words), one idea per sentence. Prefer *saves, checks, skips, calls, fails, deletes* over *orchestrates, leverages, materializes, facilitates, subsequently*.

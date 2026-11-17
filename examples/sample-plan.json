@@ -129,9 +129,9 @@
       "visuals": [
         {
           "src": "sample-webhook-ui.png",
-          "source_label": "Figma / App UI",
+          "source_label": "Impacted Frontend · Payments Admin Console",
           "figma_url": "https://www.figma.com/design/demoWebhookSpec/Payments-Console?node-id=18-204",
-          "caption": "Admin Console: duplicate retries short-circuit with `200 deduplicated` (top right), while active runs hold a 60s `CLAIMED` lease.",
+          "caption": "Even though this PR only changes backend SQL and Express code, here is the Admin Console it powers: duplicate retries return `200 deduplicated` (top right) while active runs hold a 60s `CLAIMED` lease.",
           "annotations": [
             {
               "kind": "circle",

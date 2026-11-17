@@ -906,7 +906,8 @@ def render_visuals_block_html(
 
         resolved_src, w, h = resolve_visual_asset(vis, search_dirs=search_dirs)
         figma_link_html = (
-            f'<a class="vis-ext-link" href="{esc(figma_url)}" target="_blank" rel="noopener noreferrer">'
+            f'<a class="vis-ext-link" href="{esc(figma_url)}" target="_blank" rel="noopener noreferrer" '
+            f'aria-label="Open in Figma: {esc(source_label)}">'
             f'Open in Figma <span aria-hidden="true">↗</span></a>'
             if figma_url
             else ""
@@ -923,9 +924,12 @@ def render_visuals_block_html(
             continue
 
         ann_labels = [str(a.get("label")).strip() for a in annotations if a.get("label")]
-        alt_text = caption or source_label
         if ann_labels:
-            alt_text += f" (Highlighted: {', '.join(ann_labels)})"
+            alt_text = f"{source_label} — red marks on: {', '.join(ann_labels)}"
+        elif caption:
+            alt_text = source_label
+        else:
+            alt_text = f"{source_label} screenshot"
 
         overlay_svg = render_annotations_svg(annotations, w, h)
         is_remote = resolved_src.startswith(("http://", "https://"))
@@ -941,7 +945,7 @@ def render_visuals_block_html(
     <span class="vis-badge">{esc(source_label)}</span>
     <div class="visual-actions">
       {figma_link_html}
-      <button type="button" class="vis-zoom-btn">Zoom</button>
+      <button type="button" class="vis-zoom-btn" aria-label="Zoom {esc(source_label)} screenshot">Zoom</button>
     </div>
   </div>
   <div class="visual-stage">
@@ -963,19 +967,47 @@ class PlanValidationError(Exception):
     pass
 
 
-def _validate_visuals_list(visuals: Any, owner_name: str, errors: list[str]) -> None:
+def _validate_visuals_list(
+    visuals: Any,
+    owner_name: str,
+    errors: list[str],
+    *,
+    search_dirs: list[Path] | None = None,
+) -> int:
+    """Validate visuals array and return count of annotated raster/vector screenshot cards."""
     if visuals is None:
-        return
+        return 0
     if not isinstance(visuals, list):
         errors.append(f"`{owner_name}.visuals` must be an array if provided.")
-        return
+        return 0
+    annotated_count = 0
     for v_idx, vis in enumerate(visuals):
         if not isinstance(vis, dict):
             errors.append(f"`{owner_name}.visuals[{v_idx}]` must be an object.")
             continue
-        if not vis.get("src") and not vis.get("figma_url"):
+        raw_src = str(vis.get("src") or "").strip()
+        has_src = bool(raw_src)
+        has_figma = bool(str(vis.get("figma_url") or "").strip())
+        if not has_src and not has_figma:
             errors.append(f"`{owner_name}.visuals[{v_idx}]` must specify `src` and/or `figma_url`.")
+        src_ok = True
+        if has_src and search_dirs is not None:
+            resolved_src, _, _ = resolve_visual_asset(vis, search_dirs=search_dirs)
+            if resolved_src is None:
+                src_ok = False
+                errors.append(
+                    f"`{owner_name}.visuals[{v_idx}].src` (`{raw_src}`) was not found on disk "
+                    f"(searched: {', '.join(str(d) for d in search_dirs)}). "
+                    f"Save screenshots into `$WORK_DIR/visuals/` before compiling."
+                )
         anns = vis.get("annotations")
+        if has_src and (not isinstance(anns, list) or len(anns) == 0):
+            errors.append(
+                f"`{owner_name}.visuals[{v_idx}]` attaches screenshot `{raw_src}` with zero red marks! "
+                f"Every screenshot MUST include at least one `circle`, `arrow`, or `box` in `annotations[]` "
+                f"pointing at the exact UI part this code is for."
+            )
+            continue
         if anns is not None:
             if not isinstance(anns, list):
                 errors.append(f"`{owner_name}.visuals[{v_idx}].annotations` must be an array.")
@@ -1000,10 +1032,16 @@ def _validate_visuals_list(visuals: Any, owner_name: str, errors: list[str]) -> 
                         errors.append(
                             f"`{owner_name}.visuals[{v_idx}].annotations[{a_idx}]` ({kind}) requires numeric `{ck}`."
                         )
+            if has_src and src_ok and len(anns) > 0:
+                annotated_count += 1
+    return annotated_count
 
 
 def validate_and_normalize_plan(
-    manifest: dict[str, Any], plan: dict[str, Any]
+    manifest: dict[str, Any],
+    plan: dict[str, Any],
+    *,
+    search_dirs: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Validate 100% changed-line accounting across hunks/slices, chapters, concepts, and visuals."""
     hunk_map: dict[str, dict[str, Any]] = {h["id"]: h for h in manifest.get("hunks", [])}
@@ -1023,7 +1061,9 @@ def validate_and_normalize_plan(
     for req_field in ("tldr", "before_state", "after_state"):
         if not str(overview.get(req_field, "")).strip():
             errors.append(f"`overview.{req_field}` must be a non-empty string.")
-    _validate_visuals_list(overview.get("visuals"), "overview", errors)
+    total_annotated_visuals = _validate_visuals_list(
+        overview.get("visuals"), "overview", errors, search_dirs=search_dirs
+    )
 
     steps = plan.get("steps")
     if not isinstance(steps, list) or not steps:
@@ -1083,7 +1123,9 @@ def validate_and_normalize_plan(
                 f"Step `{sid}` has invalid `layer` `{layer}`. Expected one of: {', '.join(VALID_LAYERS)}."
             )
         step["layer"] = layer
-        _validate_visuals_list(step.get("visuals"), f"steps[{sid}]", errors)
+        total_annotated_visuals += _validate_visuals_list(
+            step.get("visuals"), f"steps[{sid}]", errors, search_dirs=search_dirs
+        )
 
         raw_specs = step.get("hunk_ids")
         if not isinstance(raw_specs, list) or not raw_specs:
@@ -1221,10 +1263,24 @@ def validate_and_normalize_plan(
                         f"Architecture edge `{edge.get('from')} -> {edge.get('to')}` references unknown node ID."
                     )
 
+    # Enforce Mandatory Visual Grounding (even on backend PRs with a frontend consumer!)
+    no_vis_reason = str(plan.get("no_visuals_justification") or "").strip()
+    if total_annotated_visuals == 0 and len(no_vis_reason) < 20:
+        errors.append(
+            "Visual Grounding Check FAILED — zero red-annotated screenshots attached across the review!\n"
+            "  Even when a PR only changes backend/API/DB code, you MUST:\n"
+            "    1. Trace which frontend screen, admin view, or user flow consumes or triggers this backend logic,\n"
+            "    2. Capture/export a screenshot or Figma frame of that UI into `$WORK_DIR/visuals/`,\n"
+            "    3. View it with `Read` and add red `circle` / `arrow` / `box` marks showing what this code is for.\n"
+            "  ONLY if you verified no UI consumer exists anywhere (or no app/Figma/PR image is reachable), "
+            "set top-level `\"no_visuals_justification\"` (>= 20 chars) stating which downstream UI you checked and why no screenshot could be captured."
+        )
+
     if errors:
         raise PlanValidationError("\n".join(errors))
 
     plan["_row_step_order"] = row_step_order
+    plan["_total_annotated_visuals"] = total_annotated_visuals
     return plan
 
 
@@ -1738,6 +1794,14 @@ def build_html_artifact(
         concept_lookup=concept_lookup,
         eager=True,
     )
+    no_vis_reason = str(plan.get("no_visuals_justification") or "").strip()
+    no_visuals_notice_html = (
+        f'<div class="callout callout-decision">'
+        f"<strong>Why no UI screenshot is attached:</strong> {fmt_prose(no_vis_reason, concept_lookup)}"
+        f"</div>"
+        if plan.get("_total_annotated_visuals", 0) == 0 and no_vis_reason
+        else ""
+    )
 
     concepts_bar_html = ""
     if concepts:
@@ -1786,6 +1850,7 @@ def build_html_artifact(
         {flow_html}
         {concepts_bar_html}
         {overview_visuals_html}
+        {no_visuals_notice_html}
         <div class="before-after">
           <div class="ba-item">
             <span class="ba-label">Before</span>
@@ -3440,8 +3505,11 @@ def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> st
         "",
         f"- **Before:** {ov['before_state']}",
         f"- **After:** {ov['after_state']}",
-        "",
     ]
+    no_vis_reason = str(plan.get("no_visuals_justification") or "").strip()
+    if plan.get("_total_annotated_visuals", 0) == 0 and no_vis_reason:
+        lines.append(f"- **Why no UI screenshot is attached:** {no_vis_reason}")
+    lines.append("")
 
     for idx, st in enumerate(plan["steps"], start=1):
         lyr = VALID_LAYERS[st["layer"]]
@@ -3449,6 +3517,12 @@ def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> st
         lead = str(st.get("explanation") or st.get("why_now") or "").strip()
         if lead:
             lines.append(lead)
+        for vis in st.get("visuals") or []:
+            if isinstance(vis, dict) and (vis.get("src") or vis.get("figma_url")):
+                v_cap = str(vis.get("caption") or vis.get("source_label") or "UI screenshot").strip()
+                v_marks = [str(a.get("label")).strip() for a in (vis.get("annotations") or []) if isinstance(a, dict) and a.get("label")]
+                mark_note = f" (red marks: {', '.join(v_marks)})" if v_marks else ""
+                lines.append(f"- **Visual:** {v_cap}{mark_note}")
         for pt in st.get("points") or []:
             if isinstance(pt, dict) and pt.get("text"):
                 anc = f"**{pt['anchor']}:** " if pt.get("anchor") else ""
@@ -3505,27 +3579,35 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: Invalid JSON input: {exc}", file=sys.stderr)
         return 1
 
+    search_dirs: list[Path] = []
+    if args.assets_dir:
+        assets_root = Path(args.assets_dir).resolve()
+        search_dirs.append(assets_root)
+        if (assets_root / "visuals").is_dir():
+            search_dirs.append(assets_root / "visuals")
+    plan_dir = plan_path.resolve().parent
+    search_dirs.append(plan_dir)
+    if (plan_dir / "visuals").is_dir():
+        search_dirs.append(plan_dir / "visuals")
+    search_dirs.append(manifest_path.resolve().parent)
+    search_dirs.append(Path.cwd())
+
     try:
-        validated_plan = validate_and_normalize_plan(manifest, plan)
+        validated_plan = validate_and_normalize_plan(manifest, plan, search_dirs=search_dirs)
     except PlanValidationError as exc:
         print(f"Plan validation error:\n{exc}", file=sys.stderr)
         return 2
-
-    search_dirs: list[Path] = []
-    if args.assets_dir:
-        search_dirs.append(Path(args.assets_dir).resolve())
-    search_dirs.append(plan_path.resolve().parent)
-    search_dirs.append(manifest_path.resolve().parent)
-    search_dirs.append(Path.cwd())
 
     html_content = build_html_artifact(manifest, validated_plan, search_dirs=search_dirs)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html_content, encoding="utf-8")
 
+    vis_count = validated_plan.get("_total_annotated_visuals", 0)
+    vis_msg = f", {vis_count} red-marked screenshot(s)" if vis_count else " (no-UI justification recorded)"
     print(
         f"✓ Verified 100% diff coverage ({manifest['stats']['total_hunks']}/"
-        f"{manifest['stats']['total_hunks']} hunks accounted across {len(validated_plan['steps'])} steps)."
+        f"{manifest['stats']['total_hunks']} hunks accounted across {len(validated_plan['steps'])} steps{vis_msg})."
     )
     print(f"✓ Interactive HTML artifact written to: {out_path} ({len(html_content):,} bytes)")
 

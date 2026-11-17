@@ -17,7 +17,7 @@ GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at
 - **Cumulative Timeline File Evolution** (showing each file *as it exists at that step*, slicing large hunks with `H007:1-34,52` so future steps don't leak early),
 - **Clickable Repo Concept Modals** (explaining any touched module or domain term from scratch for an engineer who is new to the repo),
 - **Dynamic Visual Formatting Rotation** in **very simple English**,
-- **Annotated Figma & Real-App Screenshots** (red circles, boxes, and directional arrows), and
+- **Mandatory Red-Marked Screenshots — Even on Backend PRs** (traces backend/API/DB changes to the frontend screen they impact and places red circles, boxes, and arrows showing what the code is for), and
 - **100% deterministic changed-line accounting**.
 
 User arguments (if any): `$ARGUMENTS`
@@ -54,14 +54,17 @@ Map `$ARGUMENTS` to `<SKILL_DIR>/scripts/parse_diff.py`:
 
 ---
 
-### Step 2: Gather Global Repo Context, Concepts & Visual References
+### Step 2: Gather Global Repo Context, Concepts & Red-Marked Screenshots (Mandatory)
 
 1. Read `$WORK_DIR/hunks-readable.txt` to inspect all hunk IDs (`H001`..`HNNN`), line numbers, and any Figma/screenshot URLs extracted from the PR description.
 2. Perform 2–6 targeted lookups in surrounding repo files so you understand **how the touched subsystem actually works from scratch** (who calls it, whether it runs sync or async, what DB tables/services it owns, and what happens on error). You will use these concrete facts to write **Concept Modals (`concepts[]`)** for reviewers who don't know this codebase!
-3. **Collect & Inspect Visual References (Figma / App Screenshots):**
-   - If Figma URLs exist and Figma MCP tools (`get_screenshot` / node export) are available, export the relevant frame PNG into `$WORK_DIR/visuals/` and attach `figma_url`.
-   - If UI screenshots exist in the PR, `$ARGUMENTS`, or can be captured from a running local app via Playwright/DevTools MCP, save them into `$WORK_DIR/visuals/`.
-   - **MANDATORY before adding annotations:** View every screenshot with your `Read` tool first, then place **red circles (`circle`), directional arrows (`arrow`), or boxes (`box`)** in `0..100` percentage coordinates pointing directly at what that step controls.
+3. **Hunt & Capture Impacted UI Screenshots — EVEN FOR 100% BACKEND PRs (Hard Requirement):**
+   - **Never skip screenshots just because zero frontend files appear in `git diff`!** Whenever a PR changes an API route, GraphQL/tRPC resolver, DB column, webhook handler, queue job, permission rule, or config flag, **trace its callers/consumers forward across the repo or monorepo** (`Grep` endpoint paths, client SDK methods, DTO fields, or status enums -> UI pages/tables/modals/forms) to find **which frontend screen or user flow eventually uses or displays this work**.
+   - Obtain real visual images (`$WORK_DIR/visuals/`) in this priority order:
+     1. **Figma designs:** Export the relevant frame PNG via Figma MCP (`get_screenshot` / node export) from any Figma URL in the PR, ticket, or code comments, and attach `figma_url`.
+     2. **Running local app / Storybook / browser:** Open the **impacted frontend screen** (even if its `.tsx`/`.vue` file wasn't edited in this PR!) via Playwright, Chrome DevTools MCP, or local preview URL and save a clean screenshot into `$WORK_DIR/visuals/`.
+     3. **PR/repo visual assets:** Download PR/issue image attachments from `$WORK_DIR/hunks-readable.txt` or copy matching E2E/Playwright/docs screenshots (`__screenshots__`, `e2e`, `docs`, `assets`) into `$WORK_DIR/visuals/`.
+   - **Inspect with `Read` -> Add Red Marks (`annotations[]`):** View every image file with your `Read` tool first to verify exact visual coordinates, then draw **red circles (`circle`), directional arrows (`arrow`), or boxes (`box`)** in `0..100` percentage coordinates with short labels explaining *what this code is for on that screen*. Unmarked raw screenshots are rejected by `build_artifact.py`!
 
 ---
 
@@ -87,9 +90,14 @@ Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cogniti
 - **1-Sentence Invariant & 5-Item Cap:** `explanation` MUST be **1 single plain-English sentence** (BLUF). Cap `points`, `table.rows`, `callouts`, and `untested_gaps` at **<= 5 items**, with <= 1 sentence per item.
 - **Dynamic Visual Modulation (Rotate Containers):** Never write walls of prose. After the 1-sentence `explanation`, pair the diff with the container that fits the step's shape—a compact `table` for state/input->outcome rules, bold-anchored `points` (`{"anchor": "...", "text": "..."}`) for mechanics, `visuals` for UI/Figma screens, and `callouts` only for real risks/assumptions.
 
+#### E. Compiler-Enforced Red-Marked Visuals (`visuals[]`)
+- Attach red-marked screenshots (`overview.visuals` and/or `steps[*].visuals`) wherever code connects to a user-visible screen, admin table, badge, form, or flow—including backend steps whose output feeds a frontend UI.
+- Every screenshot item with `src` **MUST** exist on disk and **MUST** contain at least one `circle`, `arrow`, or `box` in `annotations[]`.
+- `build_artifact.py` **fails with exit code `2`** if zero red-marked screenshots are attached across the review. Only when you have verified that **no UI consumer exists anywhere** (e.g., pure CLI/compiler/SDK repo) or no UI/Figma/image is reachable may you set top-level `"no_visuals_justification"` stating which downstream consumers you checked and why no screenshot could be captured (this note is printed visibly on `0. Overview`).
+
 ---
 
-### Step 4: Compile & Verify 100% Changed-Line Coverage
+### Step 4: Compile & Verify 100% Diff Coverage + Visual Grounding
 
 ```bash
 python3 "<SKILL_DIR>/scripts/build_artifact.py" \
@@ -100,7 +108,7 @@ python3 "<SKILL_DIR>/scripts/build_artifact.py" \
   --markdown-out "$WORK_DIR/unmaze-review.md"
 ```
 
-If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, invalid chapter ordering, or schema error), fix `$WORK_DIR/plan.json` and re-run until `✓ Verified 100% diff coverage` succeeds.
+If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, missing red-marked screenshots, unannotated image, or schema error), fix `$WORK_DIR/plan.json` (and capture/annotate the impacted UI screenshot if missing) and re-run until `✓ Verified 100% diff coverage` succeeds.
 
 ---
 

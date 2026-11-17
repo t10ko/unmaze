@@ -2,7 +2,12 @@
 
 `build_artifact.py` merges `diff-manifest.json` with `plan.json` to compile the Arc-sidebar review guide, cumulative timeline file states, clickable concept modals, and annotated UI/Figma screenshots.
 
-**Hard invariant:** Every changed (`+`/`−`) line in every hunk (`H001`..`HNNN`) MUST be claimed **exactly once** across `steps[*].hunk_ids` and `mechanical.groups[*].hunk_ids` (using either whole-hunk `"H007"` or line-slice `"H007:1-34,52"` syntax).
+**Hard invariants enforced by `build_artifact.py` (exit code `2` on violation):**
+1. **100% Changed-Line Coverage:** Every changed (`+`/`−`) line in every hunk (`H001`..`HNNN`) MUST be claimed **exactly once** across `steps[*].hunk_ids` and `mechanical.groups[*].hunk_ids` (using either whole-hunk `"H007"` or line-slice `"H007:1-34,52"` syntax).
+2. **Mandatory Red-Marked Screenshots (Frontend AND Backend PRs):**
+   - Every visual card with `src` MUST exist on disk (or be a valid `data:`/`https:` URL) and MUST include at least one red mark (`circle`, `arrow`, or `box`) inside `annotations[]`.
+   - Every `plan.json` MUST attach at least 1 red-marked screenshot across `overview.visuals` or `steps[*].visuals`—even on backend-only PRs whenever a frontend screen consumes or reflects that backend logic.
+   - Only when zero UI consumers exist (or no UI/Figma/screenshot is reachable after checking downstream callers) may you pass top-level `"no_visuals_justification"` (`>= 20` chars), which is rendered visibly on `0. Overview`.
 
 ---
 
@@ -149,3 +154,8 @@
    - Matching backticked terms (`` `WebhookDispatcher` ``) or explicit `[[concept-id|Text]]` markers anywhere in `overview` or `steps` automatically turn into clickable modal triggers.
 4. **Rotated Visual Containers (`table`, `points`, `visuals`, `callouts`):**
    - Keep `explanation` to **1 simple sentence**. Rotate `table` (`<= 5` rows) and `points` (`<= 5` bold-anchored 1-sentence bullets) so no step is a wall of prose.
+5. **Red-Marked Visual Annotation Coordinates (`0..100` percentages of image width & height):**
+   - `{"kind": "circle", "x": 86.2, "y": 42.7, "r": 7.0, "label": "Short label"}` (or `"rx"` & `"ry"` for ellipses)
+   - `{"kind": "arrow", "from_x": 60.0, "from_y": 29.0, "to_x": 77.2, "to_y": 41.0, "label": "Short label"}`
+   - `{"kind": "box", "x": 12.0, "y": 30.0, "w": 40.0, "h": 18.0, "label": "Short label"}`
+   - Always inspect the screenshot with `Read` before writing coordinates so every red mark lands accurately on the target UI element.
