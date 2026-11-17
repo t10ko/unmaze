@@ -15,13 +15,13 @@ GitHub still dumps changed files in **alphabetical order (`A → Z`)**:
 | What You Open | Reading Order | What Happens to Your Brain |
 | :--- | :--- | :--- |
 | **Raw GitHub Diff (`A → Z`)** | `__tests__/` → `api/routes.ts` → `pnpm-lock.yaml` → `store.ts` → `types.ts` | You read mocked tests and route glue *before* seeing the data types or business rules they use. |
-| **`unmaze` Guide** | `0. Overview` → `PR 1: Storage` → `PR 2: Route & UI` → `Boilerplate` | Every concept is introduced before anything depends on it—zero jumping across 15 browser tabs. |
+| **`unmaze` Guide** | `Overview` → `Chapter 1: Storage` → `Chapter 2: Route & UI` → `Boilerplate` | Every concept is introduced before anything depends on it—zero jumping across 15 browser tabs. |
 
 ---
 
 ## How `unmaze` Makes Large PRs Easy to Understand
 
-1. **Arc-Style Stacked PR Chapters:** Splits big multi-feature PRs into small, logical "Virtual PRs" in a collapsible Arc-browser sidebar (`PR 1`, `PR 2`, ...), each ordered from **Contracts → Core Logic → Wiring → Tests**.
+1. **Arc-Style Chapters & Role/Area Tree Filter:** Splits multi-part PRs into ordered chapters (`Chapter 1`, `Chapter 2`, ...) in a collapsible Arc sidebar, with a **pronounced top-bar tree filter** (`Frontend`, `Backend & API`, `Database & Contracts` → specific app areas) that dims unrelated chapters and steps so each engineer can review their own slice.
 2. **True Timeline File Evolution:** Files grow step by step along the review timeline—earlier steps are already merged in, the current step glows `+` / `−`, and later steps *do not exist in the file yet* so future changes never leak early.
 3. **Click Any Repo Term to Learn It From Scratch:** Don't know what `WebhookDispatcher` does in this project? Click any highlighted concept chip to open a plain-English engineering modal explaining how that part of the codebase works from zero—and jump straight to the lines touching it.
 4. **Simple English & Visual Formatting Rotation:** Enforces short, direct sentences and alternates tables, anchored 1-sentence bullets, and warnings instead of walls of AI prose.

@@ -53,10 +53,20 @@
         "**Single round-trip claim:** Uses `INSERT ... ON CONFLICT DO UPDATE` so checking and locking happen in one atomic SQL query.",
         "**Crash recovery:** Holds a 60-second `CLAIMED` lease so another worker can take over if the first worker crashes mid-request."
       ],
-      "pr_impact": "Brand-new module introduced in PR 1 and wired into the HTTP route in PR 2.",
+      "pr_impact": "Brand-new module introduced in Chapter 1 and wired into the HTTP route in Chapter 2.",
       "related_steps": ["step-1", "step-2", "step-3"]
     }
   ],
+  "file_scopes": {
+    "migrations/20261117_webhook_idempotency.sql": { "surface": "Database & Contracts", "area": "SQL Lease Table" },
+    "services/idempotency/types.ts": { "surface": "Database & Contracts", "area": "Idempotency Types" },
+    "services/idempotency/store.ts": { "surface": "Backend & API", "area": "Idempotency Store" },
+    "api/routes/webhooks.ts": { "surface": "Backend & API", "area": "Webhook Ingestion Route" },
+    "config/container.ts": { "surface": "Infra & Config", "area": "DI Container" },
+    "__tests__/webhook-dedup.test.ts": { "surface": "Tests & QA", "area": "Webhook Dedup Tests" },
+    "index.ts": { "surface": "Infra & Config", "area": "Exports & Dependencies" },
+    "pnpm-lock.yaml": { "surface": "Infra & Config", "area": "Exports & Dependencies" }
+  },
   "chapters": [
     {
       "id": "ch-1",

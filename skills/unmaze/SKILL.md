@@ -13,7 +13,8 @@ metadata:
 
 GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at once on reviewers who didn't write the code by hand and may not know how that subsystem works globally. `unmaze` turns any PR or Git diff into a **guided, low-cognitive-load interactive Artifact** with:
 
-- **Arc-style Stacked PR Chapters** (splitting large PRs into small, logical virtual PRs),
+- **Arc-style Chapters** (splitting large PRs into ordered chapters—`Chapter 1`, `Chapter 2`—in a clean sidebar),
+- **Top-Bar Role & Area Tree Filter** (2-level `Role Surface -> App Area` filter that dims unrelated chapters and steps so FE, BE, or domain engineers can review just their slice),
 - **Cumulative Timeline File Evolution** (showing each file *as it exists at that step*, slicing large hunks with `H007:1-34,52` so future steps don't leak early),
 - **Clickable Repo Concept Modals** (explaining any touched module or domain term from scratch for an engineer who is new to the repo),
 - **Dynamic Visual Formatting Rotation** in **very simple English**,
@@ -72,9 +73,10 @@ Map `$ARGUMENTS` to `<SKILL_DIR>/scripts/parse_diff.py`:
 
 Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cognitive-order-guide.md`, then write `$WORK_DIR/plan.json`.
 
-#### A. Virtual Stacked PRs (`chapters[]`) & Zero-Forward-Reference Order
-- For any PR with **4+ steps or 2+ logical concerns**, group `steps` into ordered **`chapters`** (displayed as Arc-style tabs in the left sidebar: `PR 1`, `PR 2`, `PR 3`...), ordered so Chapter 2 builds cleanly on Chapter 1.
+#### A. Chapters (`chapters[]`), 2-Level Area Scopes (`file_scopes`), & Zero-Forward-Reference Order
+- For any PR with **4+ steps or 2+ logical concerns**, group `steps` into ordered **`chapters`** (displayed as Arc-style tabs in the left sidebar: `Chapter 1`, `Chapter 2`, `Chapter 3`...), ordered so Chapter 2 builds cleanly on Chapter 1.
 - Inside each chapter, order steps from **`contracts` -> `core` -> `wiring` -> `verification`**, tucking lockfiles/exports into `mechanical` at the end.
+- Define top-level **`file_scopes`** mapping each changed file path to a 2-level `{ "surface": "...", "area": "..." }` pair (`surface` in `"Frontend"`, `"Backend & API"`, `"Database & Contracts"`, `"Tests & QA"`, `"Infra & Config"`; `area` as a clean 2–3 word feature/module part like `"Explore Metric Drawer"` or `"Rule Counts Route"`—**never** an exact filename). This powers the pronounced Top-Bar Area Filter so FE or BE reviewers can isolate their areas in one click.
 
 #### B. Cumulative Timeline File Evolution & Sub-Hunk Slicing (`H007:1-34,52`)
 - `build_artifact.py` reconstructs each file **as it exists at Step $N$**: earlier steps are already merged into the file, Step $N$ glows `+`/`−`, and future steps **do not exist in that file yet**.

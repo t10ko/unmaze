@@ -4,11 +4,11 @@ Raw `git diff` sorts files alphabetically (`a.ts` -> `z.ts`), dumping every chan
 
 ---
 
-## 1. Emulate Stacked PRs (`chapters[]`) on Multi-Concern Diffs
+## 1. Split Multi-Concern Diffs Into Ordered Chapters (`chapters[]`)
 
 When a PR has more than ~4 steps or touches multiple subsystems (e.g., DB storage + API routes + Admin UI):
-- Split the review into **2–5 Virtual Stacked PR chapters** (`PR 1`, `PR 2`, `PR 3`), ordered by dependency so `PR 1` makes complete sense on its own before `PR 2` builds on it.
-- Give each chapter its own tight `contracts -> core -> wiring -> verification` loop (2–4 steps per chapter).
+- Split the review into **2–5 ordered chapters** (`Chapter 1`, `Chapter 2`, `Chapter 3`), ordered by dependency so `Chapter 1` makes complete sense on its own before `Chapter 2` builds on it.
+- Give each chapter its own tight `contracts -> core -> wiring -> verification` loop (2–4 steps per chapter), and tag `file_scopes` with semantic 2–3 word `area` names so FE and BE reviewers can filter to their own areas in the top bar.
 
 ---
 

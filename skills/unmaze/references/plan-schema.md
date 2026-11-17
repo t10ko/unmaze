@@ -46,6 +46,16 @@
       "related_steps": ["step-4"]
     }
   ],
+  "file_scopes": {
+    "migrations/20261117_webhook_idempotency.sql": { "surface": "Database & Contracts", "area": "SQL Lease Table" },
+    "services/idempotency/types.ts": { "surface": "Database & Contracts", "area": "Idempotency Types" },
+    "services/idempotency/store.ts": { "surface": "Backend & API", "area": "Idempotency Store" },
+    "api/routes/webhooks.ts": { "surface": "Backend & API", "area": "Webhook Ingestion Route" },
+    "config/container.ts": { "surface": "Infra & Config", "area": "DI Container" },
+    "__tests__/webhook-dedup.test.ts": { "surface": "Tests & QA", "area": "Webhook Dedup Tests" },
+    "index.ts": { "surface": "Infra & Config", "area": "Exports & Dependencies" },
+    "pnpm-lock.yaml": { "surface": "Infra & Config", "area": "Exports & Dependencies" }
+  },
   "chapters": [
     {
       "id": "ch-storage",
@@ -148,8 +158,9 @@
 1. **Sub-Hunk Slicing (`"H007:1-34,52"`) & Timeline File Evolution:**
    - Any entry in `hunk_ids` can be a whole hunk (`"H007"`) or comma-separated `new_line` ranges (`"H007:1-34,52"`).
    - At Step $N$, `build_artifact.py` renders each file as of Step $N$: slices from Steps $< N$ are already merged into the file, Step $N$'s slice shows as `+`/`−`, and slices from Steps $> N$ do not exist in the file yet (even inside `Show lines above/below` and `File at this step`).
-2. **Chapters / Virtual Stacked PRs (`chapters[]`):**
-   - `chapters[*].step_ids` must partition `steps[*].id` in exact reading order.
+2. **Chapters (`chapters[]`) & 2-Level Area Filter (`file_scopes`):**
+   - `chapters[*].step_ids` must partition `steps[*].id` in exact reading order (rendered as `Chapter 1`, `Chapter 2`, ...).
+   - `file_scopes` maps each file path to `{ "surface": "Frontend | Backend & API | Database & Contracts | Tests & QA | Infra & Config", "area": "Human Feature/Module Part" }` (never raw filenames) so reviewers can filter chapters and steps by role or subsystem in the top bar.
 3. **Clickable Concept Modals (`concepts[]`):**
    - Matching backticked terms (`` `WebhookDispatcher` ``) or explicit `[[concept-id|Text]]` markers anywhere in `overview` or `steps` automatically turn into clickable modal triggers.
 4. **Rotated Visual Containers (`table`, `points`, `visuals`, `callouts`):**

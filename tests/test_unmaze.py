@@ -314,6 +314,46 @@ class UnmazeTestSuite(unittest.TestCase):
         self.assertNotIn('<figure class="visual-card">', html_out)
         self.assertNotIn("headless CLI with zero UI consumers", html_out)
 
+    def test_chapters_naming_overview_no_zero_pronounced_pr_and_two_level_scope_filter(self) -> None:
+        manifest = self._build_sample_manifest()
+        plan = copy.deepcopy(self.sample_plan)
+        # Even if an agent accidentally writes a raw filename in `area`, build_artifact strips extensions!
+        plan["file_scopes"]["api/routes/webhooks.ts"] = {
+            "surface": "Backend & API",
+            "area": "api/routes/webhooks.ts",
+        }
+        validated = build_artifact.validate_and_normalize_plan(manifest, plan)
+        rendered = build_artifact.build_html_artifact(
+            manifest, validated, search_dirs=[REPO_ROOT / "examples"]
+        )
+
+        # 1. Overview has NO `0` badge
+        self.assertNotIn('<span class="arc-ch-num">0</span>', rendered)
+
+        # 2. Chapters are labeled `Chapter 1`, `Chapter 2` (NOT `PR 1`, `PR 2`)
+        self.assertIn('<span class="arc-ch-num">Chapter 1</span>', rendered)
+        self.assertIn('<span class="arc-ch-num">Chapter 2</span>', rendered)
+        self.assertNotIn('<span class="arc-ch-num">PR 1</span>', rendered)
+        self.assertIn("Start Chapter 1:", rendered)
+
+        # 3. Pronounced Pull Request CTA in top bar + diff card PR buttons
+        self.assertIn('class="pr-cta-btn"', rendered)
+        self.assertIn("Open Pull Request", rendered)
+        self.assertIn('class="hunk-pr-btn"', rendered)
+
+        # 4. Pronounced 2-level Scope Filter in top bar with zero raw filenames
+        self.assertIn('id="scope-filter-btn"', rendered)
+        self.assertIn('id="scope-filter-popover"', rendered)
+        self.assertIn('data-surface-label="Backend &amp; API"', rendered)
+        self.assertIn('data-area-label="Idempotency Store"', rendered)
+        # Raw filename `api/routes/webhooks.ts` was cleaned to `"Webhooks"` (no `.ts` in area labels!)
+        area_labels = re.findall(r'data-area-label="([^"]+)"', rendered)
+        self.assertGreaterEqual(len(area_labels), 4)
+        for lbl in area_labels:
+            self.assertNotIn(".ts", lbl)
+            self.assertNotIn(".sql", lbl)
+            self.assertNotIn("/", lbl)
+
 
 if __name__ == "__main__":
     unittest.main()

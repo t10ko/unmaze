@@ -1279,9 +1279,262 @@ def validate_and_normalize_plan(
     if errors:
         raise PlanValidationError("\n".join(errors))
 
+    # Normalize optional `file_scopes` (`{"path/to/file": {"surface": "...", "area": "..."}}`)
+    raw_file_scopes = plan.get("file_scopes")
+    if raw_file_scopes is not None and not isinstance(raw_file_scopes, dict):
+        raise PlanValidationError("`file_scopes` must be an object mapping file paths to `{surface, area}`.")
+
     plan["_row_step_order"] = row_step_order
     plan["_total_annotated_visuals"] = total_annotated_visuals
     return plan
+
+
+# ---------------------------------------------------------------------------
+# 2-Level Scope Filter Tree (Role Surface -> App Area; never raw filenames)
+# ---------------------------------------------------------------------------
+
+CANONICAL_SURFACE_ORDER = [
+    "Frontend",
+    "Backend & API",
+    "Database & Contracts",
+    "Tests & QA",
+    "Infra & Config",
+]
+
+ACRONYM_WORDS = {"api", "sql", "ui", "ux", "db", "di", "http", "https", "qa", "id", "ids", "url", "jwt", "sso", "cli", "pr", "css", "dom", "html", "rpc"}
+
+GENERIC_PATH_PARTS = {
+    "src", "app", "apps", "packages", "lib", "internal", "pkg", "cmd",
+    "server", "backend", "frontend", "web", "client", "ui", "api", "routes",
+    "controllers", "handlers", "services", "components", "pages", "views",
+    "hooks", "migrations", "db", "__tests__", "tests", "test", "config",
+    "utils", "helpers", "common", "shared", "modules", "features",
+}
+
+STRIP_FILE_EXTS_RE = re.compile(
+    r"(\.(test|spec|stories|d))?\.(tsx?|jsx?|mjs|cjs|vue|svelte|css|scss|less|py|go|rs|java|kt|rb|php|sql|prisma|graphql|proto|ya?ml|json|toml|lock|md|sh)$",
+    re.IGNORECASE,
+)
+
+
+def _slugify(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-") or "general"
+
+
+def _humanize_words(raw: str) -> str:
+    s = re.sub(r"^\d{6,}[_-]?", "", raw.strip())
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s)
+    parts = [p for p in re.split(r"[\s_\-./]+", s) if p]
+    if not parts:
+        return "Core Module"
+    out = []
+    for w in parts:
+        lw = w.lower()
+        if lw in ACRONYM_WORDS:
+            out.append(lw.upper() if lw != "ids" else "IDs")
+        else:
+            out.append(w[0].upper() + w[1:] if len(w) > 1 else w.upper())
+    return " ".join(out)
+
+
+def clean_area_label(raw_label: str) -> str:
+    """Guarantee area labels represent semantic app parts and never exact filenames."""
+    txt = str(raw_label or "").strip()
+    if not txt:
+        return "General"
+    # If a path or filename with extension was passed, strip folder prefix and file extensions
+    if "/" in txt or STRIP_FILE_EXTS_RE.search(txt):
+        base = PurePosixPath(txt).name
+        base = STRIP_FILE_EXTS_RE.sub("", base)
+        return _humanize_words(base)
+    return txt
+
+
+def normalize_surface_label(raw_surface: str) -> str:
+    low = str(raw_surface or "").strip().lower()
+    if not low:
+        return "Backend & API"
+    if low in {"fe", "frontend", "ui", "web", "client"}:
+        return "Frontend"
+    if low in {"be", "backend", "api", "server", "service", "services", "backend & api"}:
+        return "Backend & API"
+    if low in {"db", "data", "database", "schema", "contracts", "database & contracts", "sql"}:
+        return "Database & Contracts"
+    if low in {"test", "tests", "qa", "verification", "testing", "tests & qa"}:
+        return "Tests & QA"
+    if low in {"infra", "config", "devops", "ci", "build", "boilerplate", "mechanical", "infra & config"}:
+        return "Infra & Config"
+    return str(raw_surface).strip()
+
+
+def infer_file_scope(
+    file_obj: dict[str, Any], *, is_mechanical: bool = False, step_layer: str = ""
+) -> tuple[str, str]:
+    """Infer `(surface_label, area_label)` without ever exposing raw filenames."""
+    fpath = str(file_obj.get("path") or "")
+    cat = str(file_obj.get("category") or "")
+    p = PurePosixPath(fpath)
+    parts_low = [seg.lower() for seg in p.parts[:-1]]
+    name_low = p.name.lower()
+    stem_clean = STRIP_FILE_EXTS_RE.sub("", p.name)
+
+    if (
+        is_mechanical
+        or cat == "generated_or_lockfile"
+        or name_low in {"index.ts", "index.js", "__init__.py", "package.json"}
+        or name_low.endswith((".lock", "lock.yaml", "lock.json"))
+        or (parts_low and parts_low[0] in {"config", ".github", "infra", "deploy", "scripts"})
+    ):
+        surface = "Infra & Config"
+    elif (
+        cat == "test"
+        or any(seg in {"__tests__", "tests", "test", "e2e", "cypress"} for seg in parts_low)
+        or ".test." in name_low
+        or ".spec." in name_low
+        or name_low.endswith("_test.go")
+        or name_low.startswith("test_")
+    ):
+        surface = "Tests & QA"
+    elif (
+        name_low.endswith((".tsx", ".jsx", ".vue", ".svelte", ".css", ".scss", ".less"))
+        or any(seg in {"frontend", "client", "web", "ui", "components", "pages", "views", "hooks", "drawers", "modals"} for seg in parts_low)
+    ):
+        surface = "Frontend"
+    elif (
+        name_low.endswith((".sql", ".prisma", ".graphql", ".proto"))
+        or any(seg in {"migrations", "schema", "schemas", "db", "contracts"} for seg in parts_low)
+        or stem_clean.lower() in {"types", "schema", "models", "contracts"}
+        or step_layer == "contracts"
+    ):
+        surface = "Database & Contracts"
+    else:
+        surface = "Backend & API"
+
+    # Pick semantic module/feature part (never a filename)
+    specific_dirs = [seg for seg in p.parts[:-1] if seg.lower() not in GENERIC_PATH_PARTS]
+    if specific_dirs:
+        area = _humanize_words(specific_dirs[-1])
+    elif surface == "Infra & Config":
+        if "config" in parts_low or stem_clean.lower() in {"container", "di", "env"}:
+            area = "App Wiring & Config"
+        else:
+            area = "Exports & Dependencies"
+    elif surface == "Tests & QA":
+        base_topic = re.sub(r"[_-]?(test|spec)s?$", "", stem_clean, flags=re.IGNORECASE)
+        area = f"{_humanize_words(base_topic)} Tests" if base_topic else "Automated Tests"
+    elif "routes" in parts_low or "controllers" in parts_low or "api" in parts_low:
+        area = f"{_humanize_words(stem_clean)} API"
+    elif "migrations" in parts_low or name_low.endswith(".sql"):
+        area = f"{_humanize_words(stem_clean)} Schema"
+    else:
+        area = _humanize_words(stem_clean)
+
+    return surface, area
+
+
+def resolve_slice_scope(
+    file_obj: dict[str, Any],
+    *,
+    plan_file_scopes: dict[str, Any],
+    step_scope: dict[str, Any] | None,
+    is_mechanical: bool = False,
+    step_layer: str = "",
+) -> tuple[str, str, str, str]:
+    """Return `(surface_id, surface_label, area_id, area_label)`."""
+    fpath = file_obj["path"]
+    override = plan_file_scopes.get(fpath) if isinstance(plan_file_scopes, dict) else None
+    if isinstance(override, dict) and (override.get("surface") or override.get("area")):
+        surf_lbl = normalize_surface_label(override.get("surface") or "")
+        area_lbl = clean_area_label(override.get("area") or surf_lbl)
+    elif isinstance(step_scope, dict) and (step_scope.get("surface") or step_scope.get("area")):
+        surf_lbl = normalize_surface_label(step_scope.get("surface") or "")
+        area_lbl = clean_area_label(step_scope.get("area") or surf_lbl)
+    else:
+        surf_lbl, area_lbl = infer_file_scope(
+            file_obj, is_mechanical=is_mechanical, step_layer=step_layer
+        )
+    surf_id = _slugify(surf_lbl)
+    area_id = f"{surf_id}__{_slugify(area_lbl)}"
+    return surf_id, surf_lbl, area_id, area_lbl
+
+
+def _render_cb_box_html() -> str:
+    return (
+        '<span class="cb-box" aria-hidden="true">'
+        '<svg class="cb-svg cb-svg-check" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+        '<svg class="cb-svg cb-svg-dash" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>'
+        "</span>"
+    )
+
+
+def render_scope_popover_html(surfaces_tree: list[dict[str, Any]]) -> str:
+    """Render the 2-level tree popover (`Role Surface -> App Area`, zero filenames)."""
+    cb_box = _render_cb_box_html()
+    groups_html: list[str] = []
+    for surf in surfaces_tree:
+        sid = surf["id"]
+        slabel = surf["label"]
+        s_steps = len(surf["step_indices"])
+        s_count_txt = (
+            f"{s_steps} step{'s' if s_steps != 1 else ''}"
+            if s_steps > 0
+            else "Boilerplate"
+        )
+        area_rows: list[str] = []
+        for area in surf["areas"]:
+            aid = area["id"]
+            alabel = area["label"]
+            a_steps = len(area["step_indices"])
+            a_count_txt = (
+                f"{a_steps} step{'s' if a_steps != 1 else ''}"
+                if a_steps > 0
+                else "Boilerplate"
+            )
+            area_rows.append(
+                f'<div class="scope-row scope-area-row">'
+                f'<label class="scope-label">'
+                f'<input type="checkbox" class="cb-input scope-area-cb" '
+                f'data-surface-id="{esc(sid)}" data-area-id="{esc(aid)}" data-area-label="{esc(alabel)}" checked>'
+                f"{cb_box}"
+                f'<span class="scope-area-name">{esc(alabel)}</span>'
+                f"</label>"
+                f'<span class="scope-meta-count">{esc(a_count_txt)}</span>'
+                f'<button type="button" class="scope-only-btn" data-only-area="{esc(aid)}" '
+                f'aria-label="Only {esc(alabel)}">Only</button>'
+                f"</div>"
+            )
+
+        groups_html.append(
+            f'<div class="scope-surface-group" data-surface-group="{esc(sid)}">'
+            f'<div class="scope-row scope-surface-row">'
+            f'<button type="button" class="scope-exp-btn" aria-expanded="true" '
+            f'aria-label="Toggle {esc(slabel)} areas">▾</button>'
+            f'<label class="scope-label">'
+            f'<input type="checkbox" class="cb-input scope-surface-cb" '
+            f'data-surface-id="{esc(sid)}" data-surface-label="{esc(slabel)}" checked>'
+            f"{cb_box}"
+            f'<span class="scope-surface-name">{esc(slabel)}</span>'
+            f"</label>"
+            f'<span class="scope-meta-count">{esc(s_count_txt)}</span>'
+            f'<button type="button" class="scope-only-btn" data-only-surface="{esc(sid)}" '
+            f'aria-label="Only {esc(slabel)}">Only</button>'
+            f"</div>"
+            f'<div class="scope-area-list">{"".join(area_rows)}</div>'
+            f"</div>"
+        )
+
+    return f"""<div id="scope-filter-popover" popover="auto" class="scope-popover" role="region" aria-label="Filter review areas">
+      <div class="scope-pop-head">
+        <div>
+          <strong class="scope-pop-title">Filter Review by Area</strong>
+          <span class="scope-pop-sub">Unmatched chapters &amp; steps dim automatically</span>
+        </div>
+        <button type="button" id="scope-select-all" class="scope-all-btn">Select all</button>
+      </div>
+      <div class="scope-tree">
+        {"".join(groups_html)}
+      </div>
+    </div>"""
 
 
 # ---------------------------------------------------------------------------
@@ -1323,6 +1576,8 @@ def render_timeline_slice_card_html(
     note: str | None,
     concept_lookup: dict[str, str],
     collapsed: bool,
+    area_id: str = "",
+    area_label: str = "",
 ) -> str:
     fpath = file_obj["path"]
     lang = detect_lang_family(fpath)
@@ -1393,9 +1648,16 @@ def render_timeline_slice_card_html(
             deep_url = f"{base_anchor}#diff-{digest_part.group(1)}R{slice_first_ln}"
 
     link_html = (
-        f'<a class="hunk-ext-link" href="{esc(deep_url)}" target="_blank" rel="noopener noreferrer">'
-        f'PR <span aria-hidden="true">↗</span></a>'
+        f'<a class="hunk-pr-btn" href="{esc(deep_url)}" target="_blank" rel="noopener noreferrer" '
+        f'aria-label="Open in PR: {esc(fpath)}">'
+        f'Open in PR <span aria-hidden="true">↗</span></a>'
         if deep_url
+        else ""
+    )
+
+    area_tag_html = (
+        f'<span class="area-badge">{esc(area_label)}</span>'
+        if area_label
         else ""
     )
 
@@ -1512,11 +1774,13 @@ def render_timeline_slice_card_html(
         f"{snapshot_block_html}"
     )
 
+    area_attr = f' data-area-id="{esc(area_id)}"' if area_id else ""
     if collapsed:
-        return f"""<article class="hunk-card" id="card-{esc(card_uid)}">
+        return f"""<article class="hunk-card" id="card-{esc(card_uid)}"{area_attr}>
   <div class="hunk-head">
     <div class="hunk-title-wrap">
       <code class="hunk-filepath" id="{caption_id}">{path_display}</code>
+      {area_tag_html}
       {timeline_tag}
     </div>
     <div class="hunk-right">{step_file_btn_html}{stats_html}{link_html}</div>
@@ -1528,10 +1792,11 @@ def render_timeline_slice_card_html(
   </details>
 </article>"""
 
-    return f"""<article class="hunk-card" id="card-{esc(card_uid)}">
+    return f"""<article class="hunk-card" id="card-{esc(card_uid)}"{area_attr}>
   <div class="hunk-head">
     <div class="hunk-title-wrap">
       <code class="hunk-filepath" id="{caption_id}">{path_display}</code>
+      {area_tag_html}
       {timeline_tag}
     </div>
     <div class="hunk-right">{step_file_btn_html}{stats_html}{link_html}</div>
@@ -1720,7 +1985,7 @@ def build_html_artifact(
     mech_slice_count = sum(len(g["_slices"]) for g in mech_groups)
     total_main_steps = len(steps)
 
-    # Map chapters (Virtual Stacked PRs)
+    # Map chapters (`Chapter 1`, `Chapter 2`, ...)
     chapters: list[dict[str, Any]] = plan.get("chapters") or []
     step_to_chapter: dict[str, tuple[int, dict[str, Any]]] = {}
     for c_idx, ch in enumerate(chapters, start=1):
@@ -1731,6 +1996,89 @@ def build_html_artifact(
     step_title_by_id = {
         st["id"]: f"Step {idx}: {st['title']}" for idx, st in enumerate(steps, start=1)
     }
+
+    # --- Pre-compute 2-Level Scope Tree (`Role Surface -> App Area`, zero filenames) ---
+    plan_file_scopes: dict[str, Any] = plan.get("file_scopes") or {}
+    surface_registry: dict[str, dict[str, Any]] = {}
+
+    def register_scope_usage(
+        surf_id: str, surf_lbl: str, area_id: str, area_lbl: str, main_step_idx: int | None
+    ) -> None:
+        s_node = surface_registry.setdefault(
+            surf_id,
+            {"id": surf_id, "label": surf_lbl, "step_indices": set(), "areas_map": {}},
+        )
+        a_node = s_node["areas_map"].setdefault(
+            area_id,
+            {"id": area_id, "label": area_lbl, "step_indices": set()},
+        )
+        if main_step_idx is not None:
+            s_node["step_indices"].add(main_step_idx)
+            a_node["step_indices"].add(main_step_idx)
+
+    # Assign scopes to every slice in Steps 1..N and Mechanical groups
+    for idx, st in enumerate(steps, start=1):
+        st_scope = st.get("scope") if isinstance(st.get("scope"), dict) else None
+        st_area_ids: list[str] = []
+        for sl in st["_slices"]:
+            h_obj = hunk_map[sl["hunk_id"]]
+            f_obj = file_map[h_obj["file_path"]]
+            surf_id, surf_lbl, area_id, area_lbl = resolve_slice_scope(
+                f_obj,
+                plan_file_scopes=plan_file_scopes,
+                step_scope=st_scope,
+                is_mechanical=False,
+                step_layer=st["layer"],
+            )
+            sl["_area_id"] = area_id
+            sl["_area_label"] = area_lbl
+            if area_id not in st_area_ids:
+                st_area_ids.append(area_id)
+            register_scope_usage(surf_id, surf_lbl, area_id, area_lbl, idx)
+        st["_area_ids"] = st_area_ids
+
+    mech_area_ids: list[str] = []
+    for grp in mech_groups:
+        grp_scope = grp.get("scope") if isinstance(grp.get("scope"), dict) else None
+        for sl in grp["_slices"]:
+            h_obj = hunk_map[sl["hunk_id"]]
+            f_obj = file_map[h_obj["file_path"]]
+            surf_id, surf_lbl, area_id, area_lbl = resolve_slice_scope(
+                f_obj,
+                plan_file_scopes=plan_file_scopes,
+                step_scope=grp_scope,
+                is_mechanical=True,
+                step_layer="",
+            )
+            sl["_area_id"] = area_id
+            sl["_area_label"] = area_lbl
+            if area_id not in mech_area_ids:
+                mech_area_ids.append(area_id)
+            register_scope_usage(surf_id, surf_lbl, area_id, area_lbl, None)
+
+    def _surface_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+        lbl = item["label"]
+        if lbl in CANONICAL_SURFACE_ORDER:
+            return (CANONICAL_SURFACE_ORDER.index(lbl), lbl)
+        # Custom surfaces appear right after Database & Contracts, ahead of Tests & Infra
+        return (2, lbl)
+
+    surfaces_tree: list[dict[str, Any]] = []
+    for s_node in sorted(surface_registry.values(), key=_surface_sort_key):
+        areas_sorted = sorted(
+            s_node["areas_map"].values(),
+            key=lambda a: (min(a["step_indices"]) if a["step_indices"] else 9999, a["label"]),
+        )
+        surfaces_tree.append(
+            {
+                "id": s_node["id"],
+                "label": s_node["label"],
+                "step_indices": s_node["step_indices"],
+                "areas": areas_sorted,
+            }
+        )
+
+    scope_popover_html = render_scope_popover_html(surfaces_tree)
 
     # --- Build Arc-Style Left Vertical Sidebar ---
     arc_nav_items: list[str] = []
@@ -1754,8 +2102,9 @@ def build_html_artifact(
             arc_nav_items.append(
                 f"""<div class="arc-chapter" data-chapter-box="{esc(cid)}">
           <button type="button" class="arc-tab arc-chapter-btn" data-panel-index="{first_panel_idx}" data-chapter-id="{esc(cid)}">
-            <span class="arc-ch-num">PR {c_idx}</span>
+            <span class="arc-ch-num">Chapter {c_idx}</span>
             <span class="arc-tab-label">{esc(ch['title'])}</span>
+            <span class="arc-match-pill" hidden></span>
           </button>
           <div class="arc-sublist">
             {"".join(sub_btns)}
@@ -1815,25 +2164,25 @@ def build_html_artifact(
             first_p = step_index_by_id[ch["step_ids"][0]]
             ch_sum = str(ch.get("summary") or f"{len(ch['step_ids'])} steps").strip()
             ch_rows.append(
-                f"<tr>"
-                f'<td><button type="button" class="inline-jump" data-goto-index="{first_p}">PR {c_idx} · {esc(ch["title"])} →</button></td>'
+                f'<tr data-overview-chapter="{esc(ch["id"])}">'
+                f'<td><button type="button" class="inline-jump" data-goto-chapter="{esc(ch["id"])}" data-goto-index="{first_p}">Chapter {c_idx} · {esc(ch["title"])} →</button></td>'
                 f"<td>{fmt_prose(ch_sum, concept_lookup)}</td>"
                 f"</tr>"
             )
         chapters_preview_html = (
             f'<div class="table-wrap"><table class="mod-table">'
-            f"<thead><tr><th scope=\"col\">Virtual Stacked PR</th><th scope=\"col\">What It Delivers</th></tr></thead>"
+            f"<thead><tr><th scope=\"col\">Chapter</th><th scope=\"col\">What It Delivers</th></tr></thead>"
             f'<tbody>{"".join(ch_rows)}</tbody></table></div>'
         )
 
     first_btn_label = (
-        f"Start PR 1: {esc(chapters[0]['title'])} →"
+        f"Start Chapter 1: {esc(chapters[0]['title'])} →"
         if chapters
         else f"Start Step 1: {esc(VALID_LAYERS[steps[0]['layer']]['short'])} →"
     )
 
     panels_html.append(
-        f"""<section class="step-panel" id="step-overview" data-step-id="step-overview" data-panel-index="0" data-chapter-id="" aria-labelledby="heading-overview">
+        f"""<section class="step-panel" id="step-overview" data-step-id="step-overview" data-panel-index="0" data-chapter-id="" data-area-ids="*" aria-labelledby="heading-overview">
       <div class="step-card">
         <p class="eyebrow">Overview · {stats['total_files']} files (+{stats['total_additions']} / −{stats['total_deletions']})</p>
         <h2 id="heading-overview" class="step-title">The Big Picture</h2>
@@ -1855,7 +2204,7 @@ def build_html_artifact(
         {chapters_preview_html}
         <div class="step-footer">
           <span class="coverage-note">100% of diff accounted across {total_main_steps} steps</span>
-          <button type="button" class="nav-btn nav-btn-primary" data-goto-index="1">
+          <button type="button" id="overview-start-btn" class="nav-btn nav-btn-primary" data-nav-dir="next" data-default-label="{first_btn_label}" data-goto-index="1">
             {first_btn_label}
           </button>
         </div>
@@ -1875,7 +2224,7 @@ def build_html_artifact(
             c_idx, ch_obj = ch_entry
             pos_in_ch = ch_obj["step_ids"].index(sid) + 1
             eyebrow_txt = (
-                f"PR {c_idx}: {esc(ch_obj['title'])} · Step {pos_in_ch} of {len(ch_obj['step_ids'])} · "
+                f"Chapter {c_idx}: {esc(ch_obj['title'])} · Step {pos_in_ch} of {len(ch_obj['step_ids'])} · "
                 f"{esc(lyr_info['label'])}"
             )
         else:
@@ -1937,35 +2286,42 @@ def build_html_artifact(
                     note=note_val,
                     concept_lookup=concept_lookup,
                     collapsed=collapse_hunks,
+                    area_id=sl.get("_area_id", ""),
+                    area_label=sl.get("_area_label", ""),
                 )
             )
 
         prev_btn = (
-            f'<button type="button" class="nav-btn" data-goto-index="{idx - 1}">'
-            f'← {"Overview" if idx == 1 else f"Previous"}</button>'
+            f'<button type="button" class="nav-btn" data-nav-dir="prev" data-goto-index="{idx - 1}">'
+            f'← {"Overview" if idx == 1 else "Previous"}</button>'
         )
         if idx < total_main_steps:
             nxt_st = steps[idx]
             nxt_ch = step_to_chapter.get(nxt_st["id"])
             if nxt_ch and (not ch_entry or nxt_ch[1]["id"] != ch_entry[1]["id"]):
-                next_label = f"Next PR: {esc(nxt_ch[1]['title'])} →"
+                next_label = f"Next Chapter: {esc(nxt_ch[1]['title'])} →"
             else:
                 next_label = f"Next: {esc(VALID_LAYERS[nxt_st['layer']]['short'])} →"
             next_btn = (
-                f'<button type="button" class="nav-btn nav-btn-primary" data-goto-index="{idx + 1}">'
+                f'<button type="button" class="nav-btn nav-btn-primary" data-nav-dir="next" '
+                f'data-default-label="{next_label}" data-goto-index="{idx + 1}">'
                 f"{next_label}</button>"
             )
         elif mech_groups:
+            def_mech_lbl = f"Boilerplate ({mech_slice_count}) →"
             next_btn = (
-                f'<button type="button" class="nav-btn" data-goto-index="{total_main_steps + 1}">'
-                f"Boilerplate ({mech_slice_count}) →</button>"
+                f'<button type="button" class="nav-btn" data-nav-dir="next" '
+                f'data-default-label="{def_mech_lbl}" data-goto-index="{total_main_steps + 1}">'
+                f"{def_mech_lbl}</button>"
             )
         else:
-            next_btn = '<span class="done-badge">✓ Review complete</span>'
+            next_btn = '<span class="done-badge" data-done-slot="true">✓ Review complete</span>'
 
+        step_areas_csv = ",".join(st.get("_area_ids") or [])
         panels_html.append(
-            f"""<section class="step-panel" id="{esc(sid)}" data-step-id="{esc(sid)}" data-panel-index="{idx}" data-chapter-id="{esc(ch_id)}" aria-labelledby="heading-{esc(sid)}" hidden="until-found">
+            f"""<section class="step-panel" id="{esc(sid)}" data-step-id="{esc(sid)}" data-panel-index="{idx}" data-chapter-id="{esc(ch_id)}" data-area-ids="{esc(step_areas_csv)}" aria-labelledby="heading-{esc(sid)}" hidden="until-found">
       <div class="step-card">
+        <div class="outside-filter-banner" hidden>Showing step outside your active area filter.</div>
         <p class="eyebrow">{eyebrow_txt}</p>
         <h2 id="heading-{esc(sid)}" class="step-title">{esc(st['title'])}</h2>
         {lead_html}
@@ -1975,9 +2331,13 @@ def build_html_artifact(
         <div class="hunk-stack">
           {"".join(cards_rendered)}
         </div>
+        <div class="filtered-cards-bar" hidden>
+          <span class="filtered-cards-msg"></span>
+          <button type="button" class="ctx-btn filtered-cards-toggle">Show anyway</button>
+        </div>
         <div class="step-footer">
           {prev_btn}
-          {next_btn}
+          <span class="step-next-wrap">{next_btn}</span>
         </div>
       </div>
     </section>"""
@@ -2008,6 +2368,8 @@ def build_html_artifact(
                         note=None,
                         concept_lookup=concept_lookup,
                         collapsed=True,
+                        area_id=sl.get("_area_id", ""),
+                        area_label=sl.get("_area_label", ""),
                     )
                 )
             mech_blocks.append(
@@ -2015,15 +2377,21 @@ def build_html_artifact(
                 f'{reason_p}<div class="hunk-stack">{"".join(cards)}</div></div>'
             )
 
+        mech_areas_csv = ",".join(mech_area_ids)
         panels_html.append(
-            f"""<section class="step-panel" id="step-mechanical" data-step-id="step-mechanical" data-panel-index="{mech_idx}" data-chapter-id="" aria-labelledby="heading-mechanical" hidden="until-found">
+            f"""<section class="step-panel" id="step-mechanical" data-step-id="step-mechanical" data-panel-index="{mech_idx}" data-chapter-id="" data-area-ids="{esc(mech_areas_csv)}" aria-labelledby="heading-mechanical" hidden="until-found">
       <div class="step-card">
+        <div class="outside-filter-banner" hidden>Showing boilerplate outside your active area filter.</div>
         <p class="eyebrow">Appendix · Mechanical &amp; Boilerplate</p>
         <h2 id="heading-mechanical" class="step-title">Low-Signal Changes ({mech_slice_count} items)</h2>
         <p class="lead-subtle">Tucked at the end so boilerplate never blocks core review, while keeping 100% of the PR diff inspectable.</p>
         {"".join(mech_blocks)}
+        <div class="filtered-cards-bar" hidden>
+          <span class="filtered-cards-msg"></span>
+          <button type="button" class="ctx-btn filtered-cards-toggle">Show anyway</button>
+        </div>
         <div class="step-footer">
-          <button type="button" class="nav-btn" data-goto-index="{total_main_steps}">← Previous</button>
+          <button type="button" class="nav-btn" data-nav-dir="prev" data-goto-index="{total_main_steps}">← Previous</button>
           <span class="done-badge">✓ 100% of PR diff accounted</span>
         </div>
       </div>
@@ -2037,13 +2405,20 @@ def build_html_artifact(
     )
 
     pr_rail_link = (
-        f'<a class="icon-btn" href="{esc(pr_url)}" target="_blank" rel="noopener noreferrer" aria-label="Open Pull Request">'
+        f'<a class="pr-rail-pill" href="{esc(pr_url)}" target="_blank" rel="noopener noreferrer" aria-label="Open Pull Request">'
         f'PR <span aria-hidden="true">↗</span></a>'
         if pr_url
         else ""
     )
 
-    section_heading = "STACKED CHAPTERS" if chapters else "STEPS"
+    pr_topbar_cta = (
+        f'<a class="pr-cta-btn" href="{esc(pr_url)}" target="_blank" rel="noopener noreferrer">'
+        f'Open Pull Request <span aria-hidden="true">↗</span></a>'
+        if pr_url
+        else ""
+    )
+
+    section_heading = "CHAPTERS" if chapters else "STEPS"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -2307,7 +2682,7 @@ def build_html_artifact(
     /* Arc-Browser Shell Layout */
     .arc-layout {{
       display: grid;
-      grid-template-columns: 260px minmax(0, 1fr);
+      grid-template-columns: 276px minmax(0, 1fr);
       min-height: 100vh;
     }}
 
@@ -2361,7 +2736,7 @@ def build_html_artifact(
     .arc-top-btns {{
       display: flex;
       align-items: center;
-      gap: 0.28rem;
+      gap: 0.35rem;
     }}
 
     .icon-btn {{
@@ -2369,17 +2744,71 @@ def build_html_artifact(
       border: 1px solid var(--border);
       background: var(--surface);
       color: var(--muted);
-      border-radius: 6px;
-      padding: 0.2rem 0.45rem;
-      font-size: 0.74rem;
-      font-weight: 550;
+      border-radius: 7px;
+      padding: 0.28rem 0.55rem;
+      font-size: 0.76rem;
+      font-weight: 560;
       cursor: pointer;
       text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.28rem;
     }}
 
     .icon-btn:hover {{
       color: var(--text);
       border-color: var(--text);
+    }}
+
+    /* Pronounced PR Buttons (Sidebar, Top Bar CTA, and Diff Cards) */
+    .pr-rail-pill {{
+      border: 1.5px solid var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-radius: 7px;
+      padding: 0.22rem 0.52rem;
+      font-size: 0.76rem;
+      font-weight: 700;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.22rem;
+    }}
+
+    .pr-rail-pill:hover {{
+      background: var(--accent);
+      color: var(--surface);
+    }}
+
+    .pr-cta-btn {{
+      background: var(--accent);
+      color: #ffffff;
+      border: 1.5px solid var(--accent);
+      border-radius: 8px;
+      padding: 0.42rem 0.88rem;
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.32rem;
+      box-shadow: 0 2px 6px rgba(9, 105, 218, 0.28);
+      white-space: nowrap;
+    }}
+
+    :root:has(> head > meta[name="color-scheme"][content="dark"]) .pr-cta-btn {{
+      color: #0b0f16;
+    }}
+
+    @media (prefers-color-scheme: dark) {{
+      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .pr-cta-btn {{
+        color: #0b0f16;
+      }}
+    }}
+
+    .pr-cta-btn:hover {{
+      opacity: 0.92;
+      transform: translateY(-0.5px);
     }}
 
     .arc-pr-title {{
@@ -2425,7 +2854,7 @@ def build_html_artifact(
       gap: 0.48rem;
     }}
 
-    .arc-tab:hover {{
+    .arc-tab:hover:not([aria-disabled="true"]) {{
       background: var(--subtle);
     }}
 
@@ -2443,19 +2872,33 @@ def build_html_artifact(
 
     .arc-ch-num {{
       font-family: ui-monospace, SFMono-Regular, monospace;
-      font-size: 0.7rem;
+      font-size: 0.68rem;
       font-weight: 700;
-      padding: 0.1rem 0.36rem;
+      padding: 0.12rem 0.4rem;
       border-radius: 5px;
       background: var(--subtle);
       color: var(--muted);
       flex-shrink: 0;
+      white-space: nowrap;
     }}
 
     .arc-tab.is-active .arc-ch-num {{
       background: var(--accent-soft);
       color: var(--accent);
     }}
+
+    .arc-match-pill {{
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 0.66rem;
+      font-weight: 700;
+      padding: 0.06rem 0.34rem;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      flex-shrink: 0;
+    }}
+
+    .arc-match-pill[hidden] {{ display: none; }}
 
     .arc-tab-label {{
       overflow: hidden;
@@ -2474,7 +2917,7 @@ def build_html_artifact(
       border-left: 1.5px solid var(--border);
     }}
 
-    .arc-chapter.is-open .arc-sublist {{
+    .arc-chapter.is-open:not(.is-filter-disabled) .arc-sublist {{
       display: flex;
     }}
 
@@ -2495,7 +2938,7 @@ def build_html_artifact(
       gap: 0.4rem;
     }}
 
-    .arc-subtab:hover {{
+    .arc-subtab:hover:not([aria-disabled="true"]) {{
       color: var(--text);
       background: var(--subtle);
     }}
@@ -2505,6 +2948,23 @@ def build_html_artifact(
       color: var(--text);
       font-weight: 620;
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+    }}
+
+    /* Dimmed / Disabled Chapters & Steps when Filtered Out */
+    .arc-chapter.is-filter-disabled .arc-chapter-btn,
+    .arc-tab.is-filter-disabled,
+    .arc-subtab.is-filter-disabled {{
+      opacity: 0.38;
+      cursor: not-allowed;
+    }}
+
+    .arc-chapter.is-filter-disabled .arc-match-pill {{
+      background: var(--subtle);
+      color: var(--muted);
+    }}
+
+    tr.is-filter-disabled {{
+      opacity: 0.42;
     }}
 
     .arc-sub-dot {{
@@ -2534,14 +2994,14 @@ def build_html_artifact(
       flex-shrink: 0;
     }}
 
-    /* Main Rounded Canvas Surface (Arc Browser Window Feel) */
+    /* Main Rounded Canvas Surface + Pronounced Sticky Top Bar */
     .canvas-wrap {{
       background: var(--bg);
       margin: 0.55rem 0.55rem 0.55rem 0;
       border-radius: 12px;
       border: 1px solid var(--border);
       min-height: calc(100vh - 1.1rem);
-      padding: 1.2rem 1.5rem 3rem;
+      padding: 0.9rem 1.5rem 3rem;
     }}
 
     .arc-layout.is-rail-collapsed .canvas-wrap {{
@@ -2549,12 +3009,318 @@ def build_html_artifact(
     }}
 
     .canvas-topbar {{
+      position: sticky;
+      top: 0.6rem;
+      z-index: 20;
       max-width: 880px;
-      margin: 0 auto 0.85rem;
+      margin: 0 auto 1rem;
+      padding: 0.5rem 0.65rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.55rem;
+    }}
+
+    .topbar-left, .topbar-right {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.45rem;
+    }}
+
+    /* Pronounced Top-Bar Area Filter Trigger & 2-Level Tree Popover */
+    .scope-filter-group {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      position: relative;
+    }}
+
+    .scope-trigger-btn {{
+      appearance: none;
+      border: 1.5px solid var(--border);
+      background: var(--subtle);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 0.38rem 0.72rem;
+      font: inherit;
+      font-size: 0.82rem;
+      font-weight: 650;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.42rem;
+    }}
+
+    .scope-trigger-btn:hover {{
+      border-color: var(--accent);
+    }}
+
+    .scope-trigger-btn.is-filtered {{
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+    }}
+
+    .scope-icon {{
+      font-size: 0.9rem;
+      color: var(--accent);
+    }}
+
+    .scope-trigger-badge {{
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 0.71rem;
+      font-weight: 700;
+      padding: 0.08rem 0.42rem;
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }}
+
+    .scope-trigger-btn.is-filtered .scope-trigger-badge {{
+      background: var(--accent);
+      color: #ffffff;
+      border-color: var(--accent);
+    }}
+
+    :root:has(> head > meta[name="color-scheme"][content="dark"]) .scope-trigger-btn.is-filtered .scope-trigger-badge {{
+      color: #0b0f16;
+    }}
+
+    @media (prefers-color-scheme: dark) {{
+      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .scope-trigger-btn.is-filtered .scope-trigger-badge {{
+        color: #0b0f16;
+      }}
+    }}
+
+    .scope-reset-btn {{
+      appearance: none;
+      border: 1px solid var(--accent);
+      background: transparent;
+      color: var(--accent);
+      border-radius: 7px;
+      padding: 0.34rem 0.56rem;
+      font-size: 0.75rem;
+      font-weight: 650;
+      cursor: pointer;
+    }}
+
+    .scope-reset-btn[hidden] {{ display: none; }}
+    .scope-reset-btn:hover {{ background: var(--accent-soft); }}
+
+    .scope-popover {{
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      padding: 0;
+      width: min(92vw, 390px);
+      max-height: min(82vh, 580px);
+      overflow-y: auto;
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+    }}
+
+    @supports (position-area: block-end) {{
+      .scope-trigger-btn {{
+        anchor-name: --scope-trigger;
+      }}
+      [popover].scope-popover {{
+        position-anchor: --scope-trigger;
+        inset: auto;
+        margin: 0.35rem 0 0;
+        position-area: block-end span-inline-end;
+        position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+      }}
+    }}
+
+    .scope-pop-head {{
+      padding: 0.65rem 0.85rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--subtle);
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 0.5rem;
+      gap: 0.75rem;
+    }}
+
+    .scope-pop-title {{
+      display: block;
+      font-size: 0.83rem;
+    }}
+
+    .scope-pop-sub {{
+      display: block;
+      font-size: 0.72rem;
+      color: var(--muted);
+    }}
+
+    .scope-all-btn {{
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--accent);
+      border-radius: 6px;
+      padding: 0.22rem 0.52rem;
+      font-size: 0.74rem;
+      font-weight: 650;
+      cursor: pointer;
+      flex-shrink: 0;
+    }}
+
+    .scope-all-btn:hover {{ border-color: var(--accent); }}
+
+    .scope-tree {{
+      padding: 0.45rem 0.55rem 0.6rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }}
+
+    .scope-surface-group {{
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--bg);
+    }}
+
+    .scope-row {{
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.34rem 0.55rem;
+    }}
+
+    .scope-surface-row {{
+      background: var(--subtle);
+      font-weight: 650;
+    }}
+
+    .scope-area-list {{
+      display: flex;
+      flex-direction: column;
+      padding: 0.2rem 0 0.25rem 1.45rem;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+    }}
+
+    .scope-surface-group.is-collapsed .scope-area-list {{
+      display: none;
+    }}
+
+    .scope-exp-btn {{
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 0.1rem 0.2rem;
+      font-size: 0.78rem;
+      cursor: pointer;
+      line-height: 1;
+    }}
+
+    .scope-label {{
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.48rem;
+      flex: 1;
+      min-width: 0;
+      min-block-size: 28px;
+      cursor: pointer;
+      font-size: 0.81rem;
+    }}
+
+    .scope-surface-name, .scope-area-name {{
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+
+    .scope-area-name {{
+      font-weight: 500;
+    }}
+
+    .scope-meta-count {{
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 0.69rem;
+      color: var(--muted);
+      flex-shrink: 0;
+    }}
+
+    .scope-only-btn {{
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      border-radius: 5px;
+      padding: 0.1rem 0.38rem;
+      font-size: 0.69rem;
+      font-weight: 650;
+      cursor: pointer;
+      flex-shrink: 0;
+    }}
+
+    .scope-only-btn:hover {{
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-soft);
+    }}
+
+    /* Accessible Custom Checkboxes (Checked ✓ & Indeterminate −) */
+    .cb-input {{
+      position: absolute !important;
+      clip-path: inset(50%) !important;
+      overflow: hidden !important;
+      width: 1px !important;
+      height: 1px !important;
+      margin: -1px !important;
+      padding: 0 !important;
+      border: 0 !important;
+      white-space: nowrap !important;
+    }}
+
+    .cb-box {{
+      inline-size: 1.05rem;
+      block-size: 1.05rem;
+      border: 1.75px solid var(--muted);
+      border-radius: 4px;
+      background: var(--surface);
+      color: #ffffff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }}
+
+    :root:has(> head > meta[name="color-scheme"][content="dark"]) .cb-box {{
+      color: #0b0f16;
+    }}
+
+    @media (prefers-color-scheme: dark) {{
+      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .cb-box {{
+        color: #0b0f16;
+      }}
+    }}
+
+    .cb-svg {{ display: none; }}
+
+    .cb-input:is(:checked, :indeterminate) + .cb-box {{
+      background: var(--accent);
+      border-color: var(--accent);
+    }}
+
+    .cb-input:checked + .cb-box .cb-svg-check {{ display: block; }}
+    .cb-input:indeterminate + .cb-box .cb-svg-dash {{ display: block; }}
+
+    .cb-input:focus-visible + .cb-box {{
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }}
 
     .steps-stack {{
@@ -2977,14 +3743,64 @@ def build_html_artifact(
     .stat-del {{ color: var(--del-fg); font-weight: 650; }}
     .stat-neutral {{ color: var(--muted); }}
 
-    .hunk-ext-link {{
+    .hunk-pr-btn {{
       font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      border: 1px solid var(--accent);
+      background: var(--accent-soft);
       color: var(--accent);
+      border-radius: 6px;
+      padding: 0.14rem 0.5rem;
+      font-size: 0.74rem;
+      font-weight: 660;
       text-decoration: none;
-      font-weight: 550;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
     }}
 
-    .hunk-ext-link:hover {{ text-decoration: underline; }}
+    .hunk-pr-btn:hover {{
+      background: var(--accent);
+      color: var(--surface);
+    }}
+
+    .area-badge {{
+      font-size: 0.67rem;
+      font-weight: 600;
+      padding: 0.08rem 0.38rem;
+      border-radius: 5px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      white-space: nowrap;
+    }}
+
+    .hunk-card.is-card-filtered {{ display: none; }}
+
+    .filtered-cards-bar {{
+      margin-top: 0.65rem;
+      padding: 0.42rem 0.75rem;
+      border: 1px dashed var(--border);
+      border-radius: 7px;
+      background: var(--subtle);
+      font-size: 0.79rem;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.6rem;
+    }}
+
+    .filtered-cards-bar[hidden], .outside-filter-banner[hidden] {{ display: none; }}
+
+    .outside-filter-banner {{
+      margin: 0 0 0.75rem;
+      padding: 0.4rem 0.7rem;
+      border-radius: 6px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 0.79rem;
+      font-weight: 600;
+    }}
 
     .hunk-note {{
       margin: 0;
@@ -3160,7 +3976,6 @@ def build_html_artifact(
       <h1 class="arc-pr-title">{esc(title)}</h1>
 
       <button type="button" class="arc-tab is-active" data-panel-index="0" aria-current="step">
-        <span class="arc-ch-num">0</span>
         <span class="arc-tab-label">Overview</span>
       </button>
 
@@ -3172,9 +3987,24 @@ def build_html_artifact(
     </nav>
 
     <div class="canvas-wrap">
-      <div class="canvas-topbar">
-        <button type="button" id="rail-toggle" class="icon-btn" aria-expanded="true" aria-label="Toggle chapter sidebar">◧ Sidebar</button>
-        <button type="button" id="mode-toggle" class="icon-btn" aria-pressed="true">Show all steps</button>
+      <div class="canvas-topbar" role="toolbar" aria-label="Review controls">
+        <div class="topbar-left">
+          <button type="button" id="rail-toggle" class="icon-btn" aria-expanded="true" aria-label="Toggle chapter sidebar">◧ Sidebar</button>
+          <div class="scope-filter-group">
+            <button type="button" id="scope-filter-btn" class="scope-trigger-btn" popovertarget="scope-filter-popover" aria-expanded="false">
+              <svg class="scope-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="1.5 2.5 14.5 2.5 9.5 8.2 9.5 13 6.5 14.2 6.5 8.2 1.5 2.5"/></svg>
+              <span id="scope-trigger-text">Filter by Area: All</span>
+              <span id="scope-trigger-badge" class="scope-trigger-badge">{total_main_steps}/{total_main_steps} steps</span>
+              <span aria-hidden="true">▾</span>
+            </button>
+            <button type="button" id="scope-reset-top" class="scope-reset-btn" hidden>Reset ×</button>
+            {scope_popover_html}
+          </div>
+        </div>
+        <div class="topbar-right">
+          <button type="button" id="mode-toggle" class="icon-btn" aria-pressed="true">Show all steps</button>
+          {pr_topbar_cta}
+        </div>
       </div>
 
       <main id="steps-main" class="steps-stack">
@@ -3182,7 +4012,7 @@ def build_html_artifact(
       </main>
 
       <footer class="foot-hint">
-        Shortcuts: <code>[</code> / <code>]</code> prev/next step · Click any highlighted <code>concept ?</code> for a from-scratch repo explanation · <code>⌘F</code> searches all steps
+        Shortcuts: <code>[</code> / <code>]</code> prev/next enabled step · Filter by area in the top bar · Click any <code>concept ?</code> for a repo primer
       </footer>
     </div>
   </div>
@@ -3212,7 +4042,9 @@ def build_html_artifact(
   <script>
     (() => {{
       const EXPAND_STEP = {EXPAND_CHUNK};
+      const TOTAL_MAIN_STEPS = {total_main_steps};
       const supportsUntilFound = "onbeforematch" in HTMLElement.prototype;
+      const supportsNativePopover = Object.hasOwn(HTMLElement.prototype, "popover");
       const shell = document.getElementById("arc-shell");
       const railToggle = document.getElementById("rail-toggle");
       const panels = Array.from(document.querySelectorAll(".step-panel"));
@@ -3229,24 +4061,54 @@ def build_html_artifact(
       const zoomStage = document.getElementById("zoom-stage");
       const zoomCaption = document.getElementById("zoom-caption");
 
+      // Scope Filter Controls
+      const scopeBtn = document.getElementById("scope-filter-btn");
+      const scopePopover = document.getElementById("scope-filter-popover");
+      const scopeTriggerText = document.getElementById("scope-trigger-text");
+      const scopeTriggerBadge = document.getElementById("scope-trigger-badge");
+      const scopeResetTop = document.getElementById("scope-reset-top");
+      const scopeSelectAll = document.getElementById("scope-select-all");
+      const surfaceCbs = Array.from(document.querySelectorAll(".scope-surface-cb"));
+      const areaCbs = Array.from(document.querySelectorAll(".scope-area-cb"));
+
       let guidedMode = supportsUntilFound;
       let activeIndex = 0;
+      let forcedOutsideIndex = -1;
       let memoryScheme = null;
+      const panelEnabled = panels.map(() => true);
 
-      function activatePanel(index, scroll = true) {{
+      function findAdjacentEnabled(fromIdx, dir) {{
+        for (let i = fromIdx + dir; i >= 0 && i < panels.length; i += dir) {{
+          if (panelEnabled[i]) return i;
+        }}
+        return -1;
+      }}
+
+      function syncPanelVisibility() {{
+        panels.forEach((panel, idx) => {{
+          const banner = panel.querySelector(".outside-filter-banner");
+          if (banner) banner.hidden = !(idx === forcedOutsideIndex && !panelEnabled[idx]);
+
+          if (guidedMode) {{
+            if (idx === activeIndex) panel.removeAttribute("hidden");
+            else if (panelEnabled[idx]) panel.setAttribute("hidden", "until-found");
+            else panel.setAttribute("hidden", "");
+          }} else {{
+            if (panelEnabled[idx] || idx === forcedOutsideIndex) panel.removeAttribute("hidden");
+            else panel.setAttribute("hidden", "");
+          }}
+        }});
+      }}
+
+      function activatePanel(index, scroll = true, allowOutside = false) {{
         if (index < 0 || index >= panels.length) return;
+        if (!panelEnabled[index] && !allowOutside) return;
+        forcedOutsideIndex = (!panelEnabled[index] && allowOutside) ? index : -1;
         activeIndex = index;
         const activePanel = panels[index];
         const activeChapterId = activePanel.getAttribute("data-chapter-id") || "";
 
-        panels.forEach((panel, idx) => {{
-          if (guidedMode) {{
-            if (idx === index) panel.removeAttribute("hidden");
-            else panel.setAttribute("hidden", "until-found");
-          }} else {{
-            panel.removeAttribute("hidden");
-          }}
-        }});
+        syncPanelVisibility();
 
         // Sync Arc top-level tabs & chapters
         chapterBoxes.forEach((box) => {{
@@ -3276,14 +4138,278 @@ def build_html_artifact(
         }}
       }}
 
+      function updateNavButtons(isFiltered) {{
+        panels.forEach((panel, idx) => {{
+          const prevBtn = panel.querySelector('[data-nav-dir="prev"]');
+          if (prevBtn) {{
+            const prevIdx = findAdjacentEnabled(idx, -1);
+            const targetPrev = prevIdx !== -1 ? prevIdx : 0;
+            prevBtn.setAttribute("data-goto-index", String(targetPrev));
+            prevBtn.textContent = targetPrev === 0 ? "← Overview" : "← Previous";
+          }}
+
+          if (idx === 0) {{
+            const startBtn = document.getElementById("overview-start-btn");
+            if (startBtn) {{
+              const firstEn = findAdjacentEnabled(0, 1);
+              if (firstEn === -1) {{
+                startBtn.setAttribute("aria-disabled", "true");
+                startBtn.classList.add("is-filter-disabled");
+                startBtn.textContent = "No steps match filter";
+              }} else {{
+                startBtn.removeAttribute("aria-disabled");
+                startBtn.classList.remove("is-filter-disabled");
+                startBtn.setAttribute("data-goto-index", String(firstEn));
+                startBtn.textContent = isFiltered
+                  ? `Start Filtered Review (Step ${{firstEn}}) →`
+                  : (startBtn.getAttribute("data-default-label") || "Start Review →");
+              }}
+            }}
+            return;
+          }}
+
+          const nextWrap = panel.querySelector(".step-next-wrap");
+          if (!nextWrap) return;
+          const nextIdx = findAdjacentEnabled(idx, 1);
+          if (nextIdx === -1) {{
+            const done = document.createElement("span");
+            done.className = "done-badge";
+            done.textContent = isFiltered ? "✓ Filtered slice complete" : "✓ Review complete";
+            nextWrap.replaceChildren(done);
+          }} else {{
+            const isMech = panels[nextIdx].id === "step-mechanical";
+            const btnCls = isMech ? "nav-btn" : "nav-btn nav-btn-primary";
+            let lbl = "";
+            if (!isFiltered && nextIdx === idx + 1) {{
+              const origBtn = nextWrap.querySelector("[data-default-label]");
+              lbl = origBtn ? origBtn.getAttribute("data-default-label") : "";
+            }}
+            if (!lbl) {{
+              if (isMech) {{
+                lbl = "Boilerplate →";
+              }} else {{
+                const h2 = panels[nextIdx].querySelector(".step-title");
+                lbl = `Next: Step ${{nextIdx}}${{h2 ? " · " + h2.textContent : ""}} →`;
+              }}
+            }}
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = btnCls;
+            btn.setAttribute("data-nav-dir", "next");
+            btn.setAttribute("data-goto-index", String(nextIdx));
+            if (!isFiltered && nextIdx === idx + 1) btn.setAttribute("data-default-label", lbl);
+            btn.textContent = lbl;
+            nextWrap.replaceChildren(btn);
+          }}
+        }});
+      }}
+
+      function applyScopeFilter() {{
+        const checkedAreas = new Set(
+          areaCbs.filter((cb) => cb.checked).map((cb) => cb.getAttribute("data-area-id"))
+        );
+        const isFiltered = checkedAreas.size < areaCbs.length;
+
+        // Sync parent surface tri-state checkboxes
+        const fullyCheckedSurfaces = [];
+        surfaceCbs.forEach((scb) => {{
+          const sid = scb.getAttribute("data-surface-id");
+          const children = areaCbs.filter((acb) => acb.getAttribute("data-surface-id") === sid);
+          const checkedCount = children.filter((acb) => acb.checked).length;
+          scb.checked = children.length > 0 && checkedCount === children.length;
+          scb.indeterminate = checkedCount > 0 && checkedCount < children.length;
+          if (scb.checked) fullyCheckedSurfaces.push(scb.getAttribute("data-surface-label") || sid);
+        }});
+
+        // Compute panel enablement & per-card visibility inside mixed panels
+        panels.forEach((panel, idx) => {{
+          if (idx === 0) {{
+            panelEnabled[0] = true;
+            return;
+          }}
+          const rawAreas = (panel.getAttribute("data-area-ids") || "").split(",").filter(Boolean);
+          const enabled = rawAreas.some((aid) => checkedAreas.has(aid));
+          panelEnabled[idx] = enabled;
+
+          const cards = Array.from(panel.querySelectorAll(".hunk-card[data-area-id]"));
+          const filterBar = panel.querySelector(".filtered-cards-bar");
+          if (enabled && isFiltered && cards.length > 1) {{
+            const unmatched = cards.filter((c) => !checkedAreas.has(c.getAttribute("data-area-id")));
+            if (unmatched.length > 0 && unmatched.length < cards.length) {{
+              const showAllInStep = panel.getAttribute("data-show-unmatched") === "true";
+              cards.forEach((c) => {{
+                const match = checkedAreas.has(c.getAttribute("data-area-id"));
+                c.classList.toggle("is-card-filtered", !match && !showAllInStep);
+              }});
+              if (filterBar) {{
+                const msg = filterBar.querySelector(".filtered-cards-msg");
+                const tgl = filterBar.querySelector(".filtered-cards-toggle");
+                const noun = unmatched.length === 1 ? "1 file" : `${{unmatched.length}} files`;
+                if (msg) msg.textContent = `${{noun}} in this step outside active area filter`;
+                if (tgl) tgl.textContent = showAllInStep ? "Hide filtered files" : "Show anyway";
+                filterBar.hidden = false;
+              }}
+            }} else {{
+              cards.forEach((c) => c.classList.remove("is-card-filtered"));
+              if (filterBar) filterBar.hidden = true;
+            }}
+          }} else {{
+            cards.forEach((c) => c.classList.remove("is-card-filtered"));
+            if (filterBar) filterBar.hidden = true;
+          }}
+        }});
+
+        // Sync Arc subtabs & chapterless top tabs
+        subTabs.forEach((sub) => {{
+          const pIdx = Number(sub.getAttribute("data-panel-index"));
+          const en = panelEnabled[pIdx];
+          sub.classList.toggle("is-filter-disabled", !en);
+          if (!en) sub.setAttribute("aria-disabled", "true");
+          else sub.removeAttribute("aria-disabled");
+        }});
+
+        topTabs.forEach((tab) => {{
+          if (tab.classList.contains("arc-chapter-btn")) return;
+          const pIdx = Number(tab.getAttribute("data-panel-index"));
+          if (pIdx === 0) return;
+          const en = panelEnabled[pIdx];
+          tab.classList.toggle("is-filter-disabled", !en);
+          if (!en) tab.setAttribute("aria-disabled", "true");
+          else tab.removeAttribute("aria-disabled");
+        }});
+
+        // Sync Chapters (`Chapter 1`, `Chapter 2`, ...) & Overview chapter rows
+        chapterBoxes.forEach((box) => {{
+          const cid = box.getAttribute("data-chapter-box");
+          const subs = Array.from(box.querySelectorAll(".arc-subtab"));
+          const enabledSubs = subs.filter((s) => panelEnabled[Number(s.getAttribute("data-panel-index"))]);
+          const chDisabled = enabledSubs.length === 0;
+          box.classList.toggle("is-filter-disabled", chDisabled);
+
+          const chBtn = box.querySelector(".arc-chapter-btn");
+          if (chBtn) {{
+            if (chDisabled) {{
+              chBtn.setAttribute("aria-disabled", "true");
+            }} else {{
+              chBtn.removeAttribute("aria-disabled");
+              chBtn.setAttribute("data-panel-index", enabledSubs[0].getAttribute("data-panel-index"));
+            }}
+          }}
+
+          const pill = box.querySelector(".arc-match-pill");
+          if (pill) {{
+            pill.hidden = !isFiltered;
+            pill.textContent = `${{enabledSubs.length}}/${{subs.length}}`;
+          }}
+
+          const ovRow = document.querySelector(`[data-overview-chapter="${{cid}}"]`);
+          if (ovRow) {{
+            ovRow.classList.toggle("is-filter-disabled", chDisabled);
+            const jumpBtn = ovRow.querySelector("[data-goto-chapter]");
+            if (jumpBtn) {{
+              if (chDisabled) jumpBtn.setAttribute("aria-disabled", "true");
+              else {{
+                jumpBtn.removeAttribute("aria-disabled");
+                jumpBtn.setAttribute("data-goto-index", enabledSubs[0].getAttribute("data-panel-index"));
+              }}
+            }}
+          }}
+        }});
+
+        // Update Top-Bar Filter Trigger Pill & Reset Button
+        let enabledMainSteps = 0;
+        for (let i = 1; i <= TOTAL_MAIN_STEPS; i += 1) {{
+          if (panelEnabled[i]) enabledMainSteps += 1;
+        }}
+        scopeBtn.classList.toggle("is-filtered", isFiltered);
+        scopeResetTop.hidden = !isFiltered;
+        scopeTriggerBadge.textContent = `${{enabledMainSteps}}/${{TOTAL_MAIN_STEPS}} steps`;
+
+        if (!isFiltered) {{
+          scopeTriggerText.textContent = "Filter by Area: All";
+        }} else if (checkedAreas.size === 0) {{
+          scopeTriggerText.textContent = "Filter: None selected";
+        }} else if (checkedAreas.size === 1) {{
+          const singleCb = areaCbs.find((cb) => cb.checked);
+          scopeTriggerText.textContent = `Filter: ${{singleCb ? singleCb.getAttribute("data-area-label") : "1 area"}}`;
+        }} else if (
+          fullyCheckedSurfaces.length === 1 &&
+          areaCbs.filter((cb) => cb.checked).every((cb) => {{
+            const s = surfaceCbs.find((x) => x.getAttribute("data-surface-id") === cb.getAttribute("data-surface-id"));
+            return s && s.checked;
+          }})
+        ) {{
+          scopeTriggerText.textContent = `Filter: ${{fullyCheckedSurfaces[0]}}`;
+        }} else {{
+          scopeTriggerText.textContent = `Filter: ${{checkedAreas.size}} areas`;
+        }}
+
+        updateNavButtons(isFiltered);
+
+        // If current active step was just filtered out, advance to nearest enabled step (or Overview)
+        if (activeIndex > 0 && !panelEnabled[activeIndex]) {{
+          forcedOutsideIndex = -1;
+          const nextValid = findAdjacentEnabled(activeIndex, 1);
+          const prevValid = findAdjacentEnabled(activeIndex, -1);
+          activatePanel(nextValid !== -1 ? nextValid : (prevValid !== -1 ? prevValid : 0), false);
+        }} else {{
+          syncPanelVisibility();
+        }}
+      }}
+
       function setGuidedMode(enabled) {{
         guidedMode = enabled;
         modeToggle.setAttribute("aria-pressed", String(guidedMode));
         modeToggle.textContent = guidedMode ? "Show all steps" : "Step-by-step";
-        activatePanel(activeIndex, false);
+        activatePanel(activeIndex, false, forcedOutsideIndex === activeIndex);
       }}
 
+      applyScopeFilter();
       setGuidedMode(supportsUntilFound);
+
+      // Popover state & fallback for browsers without native Popover API
+      if (scopePopover && scopeBtn) {{
+        if (supportsNativePopover) {{
+          scopePopover.addEventListener("toggle", (e) => {{
+            scopeBtn.setAttribute("aria-expanded", String(e.newState === "open"));
+          }});
+        }} else {{
+          scopePopover.hidden = true;
+          scopeBtn.addEventListener("click", (e) => {{
+            e.stopPropagation();
+            scopePopover.hidden = !scopePopover.hidden;
+            scopeBtn.setAttribute("aria-expanded", String(!scopePopover.hidden));
+          }});
+          document.addEventListener("click", (e) => {{
+            if (!scopePopover.hidden && !scopePopover.contains(e.target) && e.target !== scopeBtn) {{
+              scopePopover.hidden = true;
+              scopeBtn.setAttribute("aria-expanded", "false");
+            }}
+          }});
+        }}
+      }}
+
+      surfaceCbs.forEach((scb) => {{
+        scb.addEventListener("change", () => {{
+          const sid = scb.getAttribute("data-surface-id");
+          areaCbs.forEach((acb) => {{
+            if (acb.getAttribute("data-surface-id") === sid) acb.checked = scb.checked;
+          }});
+          applyScopeFilter();
+        }});
+      }});
+
+      areaCbs.forEach((acb) => {{
+        acb.addEventListener("change", applyScopeFilter);
+      }});
+
+      function resetAllFilters() {{
+        areaCbs.forEach((cb) => {{ cb.checked = true; }});
+        applyScopeFilter();
+      }}
+
+      if (scopeSelectAll) scopeSelectAll.addEventListener("click", resetAllFilters);
+      if (scopeResetTop) scopeResetTop.addEventListener("click", resetAllFilters);
 
       railToggle.addEventListener("click", () => {{
         const collapsed = shell.classList.toggle("is-rail-collapsed");
@@ -3294,7 +4420,7 @@ def build_html_artifact(
         const matched = event.target.closest(".step-panel");
         if (!matched) return;
         const idx = Number(matched.getAttribute("data-panel-index"));
-        if (!Number.isNaN(idx)) activatePanel(idx, false);
+        if (!Number.isNaN(idx) && panelEnabled[idx]) activatePanel(idx, false);
       }});
 
       function openConceptModal(conceptId) {{
@@ -3306,6 +4432,49 @@ def build_html_artifact(
       }}
 
       document.addEventListener("click", (event) => {{
+        // Scope tree expand/collapse & "Only" quick-solo buttons
+        const expBtn = event.target.closest(".scope-exp-btn");
+        if (expBtn) {{
+          const grp = expBtn.closest(".scope-surface-group");
+          if (grp) {{
+            const collapsed = grp.classList.toggle("is-collapsed");
+            expBtn.setAttribute("aria-expanded", String(!collapsed));
+            expBtn.textContent = collapsed ? "▸" : "▾";
+          }}
+          return;
+        }}
+
+        const onlySurfBtn = event.target.closest("[data-only-surface]");
+        if (onlySurfBtn) {{
+          const targetSid = onlySurfBtn.getAttribute("data-only-surface");
+          areaCbs.forEach((cb) => {{
+            cb.checked = cb.getAttribute("data-surface-id") === targetSid;
+          }});
+          applyScopeFilter();
+          return;
+        }}
+
+        const onlyAreaBtn = event.target.closest("[data-only-area]");
+        if (onlyAreaBtn) {{
+          const targetAid = onlyAreaBtn.getAttribute("data-only-area");
+          areaCbs.forEach((cb) => {{
+            cb.checked = cb.getAttribute("data-area-id") === targetAid;
+          }});
+          applyScopeFilter();
+          return;
+        }}
+
+        const filterCardsTgl = event.target.closest(".filtered-cards-toggle");
+        if (filterCardsTgl) {{
+          const panel = filterCardsTgl.closest(".step-panel");
+          if (panel) {{
+            const cur = panel.getAttribute("data-show-unmatched") === "true";
+            panel.setAttribute("data-show-unmatched", String(!cur));
+            applyScopeFilter();
+          }}
+          return;
+        }}
+
         // Concept Modal trigger
         const conceptBtn = event.target.closest("[data-concept]");
         if (conceptBtn) {{
@@ -3313,26 +4482,29 @@ def build_html_artifact(
           return;
         }}
 
-        // Sidebar tabs & subtabs
+        // Sidebar tabs & subtabs (respect aria-disabled="true")
         const navItem = event.target.closest("[data-panel-index]");
         if (navItem && (navItem.classList.contains("arc-tab") || navItem.classList.contains("arc-subtab"))) {{
+          if (navItem.getAttribute("aria-disabled") === "true") return;
           activatePanel(Number(navItem.getAttribute("data-panel-index")), true);
           return;
         }}
 
-        // Step jump buttons (including inside Concept Modal!)
+        // Step jump buttons
         const idxBtn = event.target.closest("[data-goto-index]");
         if (idxBtn) {{
+          if (idxBtn.getAttribute("aria-disabled") === "true") return;
           if (conceptDialog && conceptDialog.open) conceptDialog.close();
           activatePanel(Number(idxBtn.getAttribute("data-goto-index")), true);
           return;
         }}
         const stepBtn = event.target.closest("[data-goto-step]");
         if (stepBtn) {{
+          const fromModal = Boolean(conceptDialog && conceptDialog.open && conceptDialog.contains(stepBtn));
           if (conceptDialog && conceptDialog.open) conceptDialog.close();
           const targetId = stepBtn.getAttribute("data-goto-step");
           const idx = panels.findIndex((p) => p.getAttribute("data-step-id") === targetId);
-          if (idx !== -1) activatePanel(idx, true);
+          if (idx !== -1) activatePanel(idx, true, fromModal);
           return;
         }}
 
@@ -3472,8 +4644,13 @@ def build_html_artifact(
         if ((conceptDialog && conceptDialog.open) || (zoomDialog && zoomDialog.open)) return;
         const tag = (event.target && event.target.tagName) || "";
         if (tag === "INPUT" || tag === "TEXTAREA") return;
-        if (event.key === "]") activatePanel(Math.min(panels.length - 1, activeIndex + 1), true);
-        else if (event.key === "[") activatePanel(Math.max(0, activeIndex - 1), true);
+        if (event.key === "]") {{
+          const nxt = findAdjacentEnabled(activeIndex, 1);
+          if (nxt !== -1) activatePanel(nxt, true);
+        }} else if (event.key === "[") {{
+          const prv = findAdjacentEnabled(activeIndex, -1);
+          if (prv !== -1) activatePanel(prv, true);
+        }}
       }});
     }})();
   </script>
