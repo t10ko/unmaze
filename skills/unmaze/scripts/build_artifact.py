@@ -1794,14 +1794,6 @@ def build_html_artifact(
         concept_lookup=concept_lookup,
         eager=True,
     )
-    no_vis_reason = str(plan.get("no_visuals_justification") or "").strip()
-    no_visuals_notice_html = (
-        f'<div class="callout callout-decision">'
-        f"<strong>Why no UI screenshot is attached:</strong> {fmt_prose(no_vis_reason, concept_lookup)}"
-        f"</div>"
-        if plan.get("_total_annotated_visuals", 0) == 0 and no_vis_reason
-        else ""
-    )
 
     concepts_bar_html = ""
     if concepts:
@@ -1850,7 +1842,6 @@ def build_html_artifact(
         {flow_html}
         {concepts_bar_html}
         {overview_visuals_html}
-        {no_visuals_notice_html}
         <div class="before-after">
           <div class="ba-item">
             <span class="ba-label">Before</span>
@@ -3505,11 +3496,8 @@ def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> st
         "",
         f"- **Before:** {ov['before_state']}",
         f"- **After:** {ov['after_state']}",
+        "",
     ]
-    no_vis_reason = str(plan.get("no_visuals_justification") or "").strip()
-    if plan.get("_total_annotated_visuals", 0) == 0 and no_vis_reason:
-        lines.append(f"- **Why no UI screenshot is attached:** {no_vis_reason}")
-    lines.append("")
 
     for idx, st in enumerate(plan["steps"], start=1):
         lyr = VALID_LAYERS[st["layer"]]

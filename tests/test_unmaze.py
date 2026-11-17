@@ -304,17 +304,15 @@ class UnmazeTestSuite(unittest.TestCase):
             )
         self.assertIn("was not found on disk", str(ctx_ghost.exception))
 
-        # 4. Headless CLI/SDK escape hatch (`no_visuals_justification`) -> succeeds & prints visibly!
+        # 4. Headless CLI/SDK escape hatch (`no_visuals_justification`) -> succeeds cleanly and drops visual cards!
         headless_plan = copy.deepcopy(no_vis_plan)
         headless_plan["no_visuals_justification"] = (
             "Checked all callers of `webhooks.ts`; this repo is a headless CLI with zero UI consumers."
         )
         validated = build_artifact.validate_and_normalize_plan(manifest, headless_plan)
         html_out = build_artifact.build_html_artifact(manifest, validated)
-        md_out = build_artifact.build_markdown_summary(manifest, validated)
-        self.assertIn("Why no UI screenshot is attached:", html_out)
-        self.assertIn("headless CLI with zero UI consumers", html_out)
-        self.assertIn("Why no UI screenshot is attached:", md_out)
+        self.assertNotIn('<figure class="visual-card">', html_out)
+        self.assertNotIn("headless CLI with zero UI consumers", html_out)
 
 
 if __name__ == "__main__":

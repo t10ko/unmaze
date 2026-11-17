@@ -7,7 +7,7 @@
 2. **Mandatory Red-Marked Screenshots (Frontend AND Backend PRs):**
    - Every visual card with `src` MUST exist on disk (or be a valid `data:`/`https:` URL) and MUST include at least one red mark (`circle`, `arrow`, or `box`) inside `annotations[]`.
    - Every `plan.json` MUST attach at least 1 red-marked screenshot across `overview.visuals` or `steps[*].visuals`—even on backend-only PRs whenever a frontend screen consumes or reflects that backend logic.
-   - Only when zero UI consumers exist (or no UI/Figma/screenshot is reachable after checking downstream callers) may you pass top-level `"no_visuals_justification"` (`>= 20` chars), which is rendered visibly on `0. Overview`.
+   - When zero UI consumers exist (e.g., pure CLI/SDK/infra) or no UI/Figma/screenshot is reachable after checking downstream callers, pass top-level `"no_visuals_justification"` (`>= 20` chars) so the build succeeds cleanly (`exit 0`) and omits the screenshot block.
 
 ---
 

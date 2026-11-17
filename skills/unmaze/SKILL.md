@@ -93,7 +93,7 @@ Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cogniti
 #### E. Compiler-Enforced Red-Marked Visuals (`visuals[]`)
 - Attach red-marked screenshots (`overview.visuals` and/or `steps[*].visuals`) wherever code connects to a user-visible screen, admin table, badge, form, or flow—including backend steps whose output feeds a frontend UI.
 - Every screenshot item with `src` **MUST** exist on disk and **MUST** contain at least one `circle`, `arrow`, or `box` in `annotations[]`.
-- `build_artifact.py` **fails with exit code `2`** if zero red-marked screenshots are attached across the review. Only when you have verified that **no UI consumer exists anywhere** (e.g., pure CLI/compiler/SDK repo) or no UI/Figma/image is reachable may you set top-level `"no_visuals_justification"` stating which downstream consumers you checked and why no screenshot could be captured (this note is printed visibly on `0. Overview`).
+- `build_artifact.py` **fails with exit code `2`** if zero red-marked screenshots are attached without checking first. When **no UI consumer exists anywhere** (e.g., pure CLI, SDK, infra, or internal job) or no app/Figma image is reachable, set top-level `"no_visuals_justification"` in `plan.json` explaining what you checked—the build then succeeds cleanly (`exit 0`) and drops the screenshot section without clutter.
 
 ---
 
