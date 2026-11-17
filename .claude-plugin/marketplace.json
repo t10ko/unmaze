@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "unmaze",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "description": "Turn sprawling AI-generated PRs into a shareable, step-by-step code review artifact ordered how humans actually understand code.",
       "source": "./"
     }

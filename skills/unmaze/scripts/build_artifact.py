@@ -2404,13 +2404,6 @@ def build_html_artifact(
         step_title_by_id=step_title_by_id,
     )
 
-    pr_rail_link = (
-        f'<a class="pr-rail-pill" href="{esc(pr_url)}" target="_blank" rel="noopener noreferrer" aria-label="Open Pull Request">'
-        f'PR <span aria-hidden="true">↗</span></a>'
-        if pr_url
-        else ""
-    )
-
     pr_topbar_cta = (
         f'<a class="pr-cta-btn" href="{esc(pr_url)}" target="_blank" rel="noopener noreferrer">'
         f'Open Pull Request <span aria-hidden="true">↗</span></a>'
@@ -2679,11 +2672,37 @@ def build_html_artifact(
       justify-content: center;
     }}
 
-    /* Arc-Browser Shell Layout */
+    html {{
+      scroll-padding-top: 4.2rem;
+    }}
+
+    /* Global Sticky App Chrome Bar (outside content container, governs sidebar + canvas) */
+    .app-topbar {{
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      min-block-size: 3.35rem;
+      padding: 0.45rem 0.85rem;
+      background: var(--rail);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.6rem;
+    }}
+
+    .topbar-left, .topbar-right {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+    }}
+
+    /* Arc-Browser Shell Layout (sits directly beneath sticky .app-topbar) */
     .arc-layout {{
       display: grid;
       grid-template-columns: 276px minmax(0, 1fr);
-      min-height: 100vh;
+      min-height: calc(100vh - 3.35rem);
     }}
 
     .arc-layout.is-rail-collapsed {{
@@ -2707,9 +2726,9 @@ def build_html_artifact(
 
     .arc-sidebar {{
       position: sticky;
-      top: 0;
-      block-size: 100vh;
-      padding: 0.85rem 0.7rem;
+      top: 3.35rem;
+      block-size: calc(100vh - 3.35rem);
+      padding: 0.25rem 0.7rem 0.85rem;
       display: flex;
       flex-direction: column;
       gap: 0.55rem;
@@ -2717,26 +2736,13 @@ def build_html_artifact(
       background: var(--rail);
     }}
 
-    .arc-top {{
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.35rem;
-      padding: 0 0.25rem 0.35rem;
-    }}
-
     .arc-brand {{
       font-family: ui-monospace, SFMono-Regular, monospace;
-      font-size: 0.82rem;
-      font-weight: 750;
+      font-size: 0.85rem;
+      font-weight: 760;
       letter-spacing: 0.02em;
       color: var(--text);
-    }}
-
-    .arc-top-btns {{
-      display: flex;
-      align-items: center;
-      gap: 0.35rem;
+      padding: 0 0.2rem;
     }}
 
     .icon-btn {{
@@ -2745,13 +2751,16 @@ def build_html_artifact(
       background: var(--surface);
       color: var(--muted);
       border-radius: 7px;
-      padding: 0.28rem 0.55rem;
-      font-size: 0.76rem;
-      font-weight: 560;
+      min-inline-size: 24px;
+      min-block-size: 32px;
+      padding: 0.28rem 0.6rem;
+      font-size: 0.77rem;
+      font-weight: 580;
       cursor: pointer;
       text-decoration: none;
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 0.28rem;
     }}
 
@@ -2760,26 +2769,14 @@ def build_html_artifact(
       border-color: var(--text);
     }}
 
-    /* Pronounced PR Buttons (Sidebar, Top Bar CTA, and Diff Cards) */
-    .pr-rail-pill {{
-      border: 1.5px solid var(--accent);
+    .mode-toggle-btn[aria-pressed="true"] {{
       background: var(--accent-soft);
+      border-color: var(--accent);
       color: var(--accent);
-      border-radius: 7px;
-      padding: 0.22rem 0.52rem;
-      font-size: 0.76rem;
-      font-weight: 700;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.22rem;
+      font-weight: 660;
     }}
 
-    .pr-rail-pill:hover {{
-      background: var(--accent);
-      color: var(--surface);
-    }}
-
+    /* Pronounced PR CTA Button in Global Top Bar */
     .pr-cta-btn {{
       background: var(--accent);
       color: #ffffff;
@@ -2994,43 +2991,22 @@ def build_html_artifact(
       flex-shrink: 0;
     }}
 
-    /* Main Rounded Canvas Surface + Pronounced Sticky Top Bar */
+    /* Main Rounded Content Surface (holds ONLY selected step/page content) */
     .canvas-wrap {{
       background: var(--bg);
-      margin: 0.55rem 0.55rem 0.55rem 0;
+      margin: 0 0.55rem 0.55rem 0;
       border-radius: 12px;
       border: 1px solid var(--border);
-      min-height: calc(100vh - 1.1rem);
-      padding: 0.9rem 1.5rem 3rem;
+      min-height: calc(100vh - 3.9rem);
+      padding: 1.35rem 1.5rem 3rem;
     }}
 
     .arc-layout.is-rail-collapsed .canvas-wrap {{
       margin-left: 0.55rem;
     }}
 
-    .canvas-topbar {{
-      position: sticky;
-      top: 0.6rem;
-      z-index: 20;
-      max-width: 880px;
-      margin: 0 auto 1rem;
-      padding: 0.5rem 0.65rem;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.55rem;
-    }}
-
-    .topbar-left, .topbar-right {{
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.45rem;
+    .step-panel {{
+      scroll-margin-top: 4.2rem;
     }}
 
     /* Pronounced Top-Bar Area Filter Trigger & 2-Level Tree Popover */
@@ -3044,10 +3020,11 @@ def build_html_artifact(
     .scope-trigger-btn {{
       appearance: none;
       border: 1.5px solid var(--border);
-      background: var(--subtle);
+      background: var(--surface);
       color: var(--text);
       border-radius: 8px;
-      padding: 0.38rem 0.72rem;
+      min-block-size: 34px;
+      padding: 0.36rem 0.72rem;
       font: inherit;
       font-size: 0.82rem;
       font-weight: 650;
@@ -3136,6 +3113,14 @@ def build_html_artifact(
         margin: 0.35rem 0 0;
         position-area: block-end span-inline-end;
         position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+      }}
+    }}
+
+    @supports not (position-area: block-end) {{
+      [popover].scope-popover {{
+        position: fixed;
+        inset: auto;
+        margin: 0;
       }}
     }}
 
@@ -3964,15 +3949,30 @@ def build_html_artifact(
   </style>
 </head>
 <body>
+  <header class="app-topbar">
+    <div class="topbar-left">
+      <button type="button" id="rail-toggle" class="icon-btn" aria-expanded="true" aria-label="Toggle chapter sidebar">◧ Sidebar</button>
+      <span class="arc-brand">unmaze</span>
+      <div class="scope-filter-group">
+        <button type="button" id="scope-filter-btn" class="scope-trigger-btn" popovertarget="scope-filter-popover" aria-controls="scope-filter-popover" aria-expanded="false">
+          <svg class="scope-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="1.5 2.5 14.5 2.5 9.5 8.2 9.5 13 6.5 14.2 6.5 8.2 1.5 2.5"/></svg>
+          <span id="scope-trigger-text">Filter by Area: All</span>
+          <span id="scope-trigger-badge" class="scope-trigger-badge">{total_main_steps}/{total_main_steps} steps</span>
+          <span aria-hidden="true">▾</span>
+        </button>
+        <button type="button" id="scope-reset-top" class="scope-reset-btn" hidden>Reset ×</button>
+        {scope_popover_html}
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button type="button" id="mode-toggle" class="icon-btn mode-toggle-btn" aria-pressed="false">All steps</button>
+      <button type="button" id="theme-toggle" class="icon-btn" aria-label="Switch color theme">Theme</button>
+      {pr_topbar_cta}
+    </div>
+  </header>
+
   <div id="arc-shell" class="arc-layout">
     <nav class="arc-sidebar" aria-label="Review chapters and steps">
-      <div class="arc-top">
-        <span class="arc-brand">unmaze</span>
-        <div class="arc-top-btns">
-          <button type="button" id="theme-toggle" class="icon-btn" aria-label="Switch color theme">Theme</button>
-          {pr_rail_link}
-        </div>
-      </div>
       <h1 class="arc-pr-title">{esc(title)}</h1>
 
       <button type="button" class="arc-tab is-active" data-panel-index="0" aria-current="step">
@@ -3987,26 +3987,6 @@ def build_html_artifact(
     </nav>
 
     <div class="canvas-wrap">
-      <div class="canvas-topbar" role="toolbar" aria-label="Review controls">
-        <div class="topbar-left">
-          <button type="button" id="rail-toggle" class="icon-btn" aria-expanded="true" aria-label="Toggle chapter sidebar">◧ Sidebar</button>
-          <div class="scope-filter-group">
-            <button type="button" id="scope-filter-btn" class="scope-trigger-btn" popovertarget="scope-filter-popover" aria-expanded="false">
-              <svg class="scope-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="1.5 2.5 14.5 2.5 9.5 8.2 9.5 13 6.5 14.2 6.5 8.2 1.5 2.5"/></svg>
-              <span id="scope-trigger-text">Filter by Area: All</span>
-              <span id="scope-trigger-badge" class="scope-trigger-badge">{total_main_steps}/{total_main_steps} steps</span>
-              <span aria-hidden="true">▾</span>
-            </button>
-            <button type="button" id="scope-reset-top" class="scope-reset-btn" hidden>Reset ×</button>
-            {scope_popover_html}
-          </div>
-        </div>
-        <div class="topbar-right">
-          <button type="button" id="mode-toggle" class="icon-btn" aria-pressed="true">Show all steps</button>
-          {pr_topbar_cta}
-        </div>
-      </div>
-
       <main id="steps-main" class="steps-stack">
         {"".join(panels_html)}
       </main>
@@ -4359,19 +4339,26 @@ def build_html_artifact(
 
       function setGuidedMode(enabled) {{
         guidedMode = enabled;
-        modeToggle.setAttribute("aria-pressed", String(guidedMode));
-        modeToggle.textContent = guidedMode ? "Show all steps" : "Step-by-step";
+        modeToggle.setAttribute("aria-pressed", String(!guidedMode));
         activatePanel(activeIndex, false, forcedOutsideIndex === activeIndex);
       }}
 
       applyScopeFilter();
       setGuidedMode(supportsUntilFound);
 
-      // Popover state & fallback for browsers without native Popover API
+      // Popover state & positioning fallback when CSS Anchor Positioning is unsupported
       if (scopePopover && scopeBtn) {{
         if (supportsNativePopover) {{
           scopePopover.addEventListener("toggle", (e) => {{
-            scopeBtn.setAttribute("aria-expanded", String(e.newState === "open"));
+            const open = e.newState === "open";
+            scopeBtn.setAttribute("aria-expanded", String(open));
+            if (open && !CSS.supports("position-area", "block-end")) {{
+              const t = scopeBtn.getBoundingClientRect();
+              const m = scopePopover.getBoundingClientRect();
+              const below = t.bottom + 6 + m.height <= window.innerHeight;
+              scopePopover.style.top = `${{below ? t.bottom + 6 : Math.max(8, t.top - m.height - 6)}}px`;
+              scopePopover.style.left = `${{Math.max(8, Math.min(t.left, window.innerWidth - m.width - 8))}}px`;
+            }}
           }});
         }} else {{
           scopePopover.hidden = true;

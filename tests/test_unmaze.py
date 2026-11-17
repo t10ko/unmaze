@@ -336,8 +336,11 @@ class UnmazeTestSuite(unittest.TestCase):
         self.assertNotIn('<span class="arc-ch-num">PR 1</span>', rendered)
         self.assertIn("Start Chapter 1:", rendered)
 
-        # 3. Pronounced Pull Request CTA in top bar + diff card PR buttons
+        # 3. Pronounced Pull Request CTA in global sticky header (and NO duplicate PR button in sidebar)
+        self.assertIn('class="app-topbar"', rendered)
+        self.assertLess(rendered.index('class="app-topbar"'), rendered.index('class="canvas-wrap"'))
         self.assertIn('class="pr-cta-btn"', rendered)
+        self.assertNotIn('class="pr-rail-pill"', rendered)
         self.assertIn("Open Pull Request", rendered)
         self.assertIn('class="hunk-pr-btn"', rendered)
 
