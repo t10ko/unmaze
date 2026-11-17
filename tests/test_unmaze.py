@@ -616,6 +616,12 @@ class UnmazeTestSuite(unittest.TestCase):
             step4_sec,
         )
 
+        # 3. Regression guard: `.steps-stack` must NOT use flex `gap` with `hidden="until-found"` (prevents N * gap top drift!)
+        steps_stack_css = re.search(r"\.steps-stack\s*\{([^}]*)\}", rendered)
+        self.assertIsNotNone(steps_stack_css)
+        self.assertNotIn("gap:", steps_stack_css.group(1))
+        self.assertIn(".step-panel:not([hidden]) ~ .step-panel:not([hidden])", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

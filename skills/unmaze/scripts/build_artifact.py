@@ -3748,9 +3748,20 @@ def build_html_artifact(
     .steps-stack {{
       max-width: 1140px;
       margin: 0 auto;
-      display: flex;
-      flex-direction: column;
-      gap: 1.25rem;
+    }}
+
+    /* Note: `hidden="until-found"` uses `content-visibility: hidden` (NOT `display: none`),
+       so `.steps-stack` must NOT use `display: flex` + `gap` (which adds N * gap above Step N). */
+    .step-panel[hidden="until-found"] {{
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+      block-size: 0 !important;
+      overflow: hidden !important;
+    }}
+
+    .step-panel:not([hidden]) ~ .step-panel:not([hidden]) {{
+      margin-top: 1.25rem;
     }}
 
     .step-card {{
