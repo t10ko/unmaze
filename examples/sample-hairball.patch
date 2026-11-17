@@ -36,7 +36,7 @@ diff --git a/api/routes/webhooks.ts b/api/routes/webhooks.ts
 index 31c902a..b04e91f 100644
 --- a/api/routes/webhooks.ts
 +++ b/api/routes/webhooks.ts
-@@ -1,14 +1,32 @@
+@@ -12,12 +12,26 @@ import { verifyWebhookSignature } from "../../services/webhooks/signature";
  import { Router } from "express";
 -import { dispatchProviderWebhook } from "../../services/webhooks/dispatcher";
 +import { container } from "../../config/container";

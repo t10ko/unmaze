@@ -1,129 +1,194 @@
 {
-  "title": "PR #142: Idempotent Webhook Ingestion & Crash-Safe Lease Recovery",
+  "title": "PR #142: Idempotent Webhook Ingestion & Lease Recovery",
   "overview": {
-    "tldr": "Adds a PostgreSQL-backed idempotency lease table and wraps `/webhooks/:provider` so retried or duplicate provider callbacks are safely ignored while crashed in-flight workers can recover after lease expiry.",
-    "global_context": "External providers (Stripe, GitHub) POST events to `webhookRouter`, which previously forwarded every payload straight into `WebhookDispatcher` without tracking event IDs.",
-    "before_state": "Every POST to `/webhooks/:provider` executed `dispatchProviderWebhook` unconditionally, causing double-charges/duplicate side effects whenever a provider retried on timeout.",
-    "after_state": "`webhookRouter` atomically claims `(provider, event_id)` in `webhook_idempotency_keys` before dispatch, marks it `COMPLETED` on success, or releases the claim on error."
+    "tldr": "Saves each webhook ID in Postgres before running it so retried callbacks from Stripe or GitHub never run twice.",
+    "global_context": "External providers send webhooks to `webhookRouter`, which calls `WebhookDispatcher` directly inside the HTTP request.",
+    "before_state": "Every retry ran `WebhookDispatcher` again and could charge a customer twice.",
+    "after_state": "`webhookRouter` claims `(provider, event_id)` in `PostgresIdempotencyStore` first and skips duplicates with `200 OK`."
   },
   "architecture_map": {
     "nodes": [
-      {
-        "id": "providers",
-        "label": "External Webhook Senders",
-        "role": "Stripe / GitHub retries with x-webhook-id",
-        "status": "unchanged",
-        "steps": []
-      },
-      {
-        "id": "router",
-        "label": "api/routes/webhooks.ts",
-        "role": "HTTP entrypoint & lifecycle try/catch",
-        "status": "modified",
-        "steps": ["step-3"]
-      },
-      {
-        "id": "store",
-        "label": "PostgresIdempotencyStore",
-        "role": "Atomic INSERT ... ON CONFLICT claim & release",
-        "status": "added",
-        "steps": ["step-1", "step-2"]
-      },
-      {
-        "id": "schema",
-        "label": "webhook_idempotency_keys (PG)",
-        "role": "Composite PK + partial index on CLAIMED leases",
-        "status": "added",
-        "steps": ["step-1"]
-      },
-      {
-        "id": "dispatcher",
-        "label": "WebhookDispatcher",
-        "role": "Existing domain side-effect processor",
-        "status": "unchanged",
-        "steps": []
-      }
-    ],
-    "edges": [
-      { "from": "providers", "to": "router", "label": "POST /webhooks/:provider" },
-      { "from": "router", "to": "store", "label": "claimOrSkip / markCompleted" },
-      { "from": "store", "to": "schema", "label": "atomic upsert" },
-      { "from": "router", "to": "dispatcher", "label": "dispatch() when PROCESS" }
+      { "id": "providers", "label": "Stripe / GitHub", "status": "unchanged", "steps": [] },
+      { "id": "router", "label": "webhookRouter", "status": "modified", "steps": ["step-4"] },
+      { "id": "store", "label": "PostgresIdempotencyStore", "status": "added", "steps": ["step-2", "step-3"] },
+      { "id": "schema", "label": "webhook_idempotency_keys", "status": "added", "steps": ["step-1"] },
+      { "id": "dispatcher", "label": "WebhookDispatcher", "status": "unchanged", "steps": [] }
     ]
   },
+  "concepts": [
+    {
+      "id": "webhook-dispatcher",
+      "term": "WebhookDispatcher",
+      "aliases": ["dispatchProviderWebhook", "webhookDispatcher"],
+      "file": "services/webhooks/dispatcher.ts",
+      "what_it_is": "Central service that routes verified webhook payloads to domain handlers like billing and repo sync.",
+      "how_it_works": [
+        "**Execution model:** Runs synchronously inside the `POST /webhooks/:provider` HTTP request with no background queue.",
+        "**Failure behavior:** Throws when a downstream handler fails so Express returns `500` and the sender retries later.",
+        "**Caller contract:** Expects signature verification and deduplication to happen before `dispatch()` is called."
+      ],
+      "pr_impact": "Its own code does not change, but `webhookRouter` now skips calling it whenever `PostgresIdempotencyStore` says the event already ran.",
+      "related_steps": ["step-4"]
+    },
+    {
+      "id": "webhook-router",
+      "term": "webhookRouter",
+      "aliases": ["api/routes/webhooks.ts"],
+      "file": "api/routes/webhooks.ts",
+      "what_it_is": "Express router that receives `POST /webhooks/:provider` callbacks from external payment and git providers.",
+      "how_it_works": [
+        "**Event ID lookup:** Reads `x-webhook-id` from HTTP headers first and falls back to `req.body.id`.",
+        "**Error middleware:** Uncaught errors bubble into `webhookErrorHandler` at the bottom of the same file."
+      ],
+      "pr_impact": "Now rejects missing event IDs with `400`, checks `PostgresIdempotencyStore` before dispatch, and frees the lease if dispatch throws.",
+      "related_steps": ["step-4"]
+    },
+    {
+      "id": "idempotency-store",
+      "term": "PostgresIdempotencyStore",
+      "aliases": ["IdempotencyStore", "webhook_idempotency_keys"],
+      "file": "services/idempotency/store.ts",
+      "what_it_is": "PostgreSQL-backed lock table that tracks whether a `(provider, event_id)` pair is running or finished.",
+      "how_it_works": [
+        "**Single round-trip claim:** Uses `INSERT ... ON CONFLICT DO UPDATE` so checking and locking happen in one atomic SQL query.",
+        "**Crash recovery:** Holds a 60-second `CLAIMED` lease so another worker can take over if the first worker crashes mid-request."
+      ],
+      "pr_impact": "Brand-new module introduced in PR 1 and wired into the HTTP route in PR 2.",
+      "related_steps": ["step-1", "step-2", "step-3"]
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch-1",
+      "title": "Atomic Lease Store",
+      "summary": "Creates the Postgres lease table, types, and atomic claim query.",
+      "step_ids": ["step-1", "step-2"]
+    },
+    {
+      "id": "ch-2",
+      "title": "Webhook Guard & UI",
+      "summary": "Adds completion/rollback methods, wraps the HTTP route, and checks tests.",
+      "step_ids": ["step-3", "step-4", "step-5"]
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "layer": "contracts",
-      "title": "Define the idempotency table schema and TypeScript store contract",
-      "why_now": "GitHub sorted these last (`migrations/` and `services/idempotency/types.ts`), but seeing the two states (`CLAIMED`, `COMPLETED`) and `ClaimDecision` union first makes the store and route logic self-explanatory.",
-      "explanation": "Introduces the `webhook_idempotency_keys` table keyed by `(provider, event_id)` with a partial index on active leases, alongside the `IdempotencyStore` interface.",
-      "callouts": [
-        {
-          "kind": "risk",
-          "text": "Notice `ClaimDecision` defines both `SKIP_ALREADY_PROCESSED` and `SKIP_IN_FLIGHT_OR_DONE` in `H008`, which leads to a mismatch in the unit test (`H001`)."
-        }
-      ],
-      "hunk_ids": ["H005", "H008"],
-      "hunk_notes": {
-        "H005": "SQL table + partial index on `lease_expires_at` where `status = 'CLAIMED'`.",
-        "H008": "Domain types and `IdempotencyStore` contract."
-      }
+      "title": "SQL lease table and TypeScript contract",
+      "explanation": "Defines `webhook_idempotency_keys` and the `IdempotencyStore` types before any query logic uses them.",
+      "table": {
+        "headers": ["Row Status", "What It Means"],
+        "rows": [
+          ["`CLAIMED`", "A worker is running this webhook right now until `lease_expires_at`."],
+          ["`COMPLETED`", "The webhook finished and all future retries must skip it."]
+        ]
+      },
+      "hunk_ids": ["H005", "H008"]
     },
     {
       "id": "step-2",
       "layer": "core",
-      "title": "Implement atomic lease claim, completion, and release in PostgresIdempotencyStore",
-      "why_now": "With the schema and types clear, inspect the exact SQL conflict resolution and error handling where race conditions or duplicate processing could slip through.",
-      "explanation": "Uses a single `INSERT ... ON CONFLICT DO UPDATE WHERE status = 'CLAIMED' AND lease_expires_at < NOW()` statement so only one worker wins either a fresh event or an expired stalled lease.",
+      "title": "Atomic claim query and 60s crash recovery",
+      "explanation": "Writes the first version of `PostgresIdempotencyStore` with `claimOrSkip()` so only one worker wins each event.",
+      "points": [
+        { "anchor": "Atomic lock", "text": "`ON CONFLICT DO UPDATE` steals an existing row only when `status = 'CLAIMED'` and its 60s lease expired." },
+        { "anchor": "Skip signal", "text": "When Postgres returns zero rows, another worker owns or finished the event, so we return `SKIP_IN_FLIGHT_OR_DONE`." }
+      ],
       "callouts": [
         {
           "kind": "assumption",
-          "text": "Silent fail-open in `catch` (`H007` L29-32): if PostgreSQL errors or times out, `claimOrSkip` returns `{ action: 'PROCESS' }`. Confirm whether billing/payment webhooks must fail-closed (HTTP 500 so Stripe retries) instead!"
+          "text": "The `catch` block returns `PROCESS` when Postgres fails (`store.ts` L29)—check whether billing webhooks must fail with `500` instead."
         },
         {
           "kind": "risk",
-          "text": "Clock-source mix (`H007` L14 vs L22): `lease_expires_at` is computed from app-server `Date.now()`, whereas expiry comparison uses DB `NOW()`. Skewed app clocks could shorten or lengthen the 60s lease."
+          "text": "`lease_expires_at` uses app `Date.now()` (`L14`) while conflict checks use DB `NOW()` (`L22`), which can drift if clocks differ."
         }
       ],
-      "hunk_ids": ["H007"],
-      "hunk_notes": {
-        "H007": "Core state machine in `services/idempotency/store.ts`."
-      }
+      "hunk_ids": ["H007:1-34,52"]
     },
     {
       "id": "step-3",
-      "layer": "wiring",
-      "title": "Wire PostgresIdempotencyStore into the DI container and /webhooks/:provider route",
-      "why_now": "Now that you trust what `claimOrSkip`, `markCompleted`, and `releaseClaim` do, verify how incoming HTTP requests invoke them around `webhookDispatcher.dispatch`.",
-      "explanation": "Extracts `eventId` from `x-webhook-id` or `req.body.id`, short-circuits non-`PROCESS` decisions with HTTP 200, and releases the claim in `catch` so transient downstream failures can be retried.",
-      "callouts": [
-        {
-          "kind": "question",
-          "text": "If `releaseClaim` itself throws during a DB outage inside the `catch` block (`H002` L23), the original dispatch error is masked. Should `releaseClaim` errors be logged and swallowed?"
-        }
-      ],
-      "hunk_ids": ["H003", "H002"],
-      "hunk_notes": {
-        "H003": "Instantiates `PostgresIdempotencyStore` with a 60s lease in `config/container.ts`.",
-        "H002": "Wraps `POST /webhooks/:provider` with claim/complete/release lifecycle."
-      }
+      "layer": "core",
+      "title": "Add completion and rollback methods to the store",
+      "explanation": "Extends `PostgresIdempotencyStore` with `markCompleted()` and `releaseClaim()` so the HTTP route can finish or undo a claim.",
+      "table": {
+        "headers": ["Outcome in Route", "Store Call", "Row State After"],
+        "rows": [
+          ["`WebhookDispatcher` succeeds", "`markCompleted()`", "Row stays `COMPLETED` forever so retries skip it."],
+          ["`WebhookDispatcher` throws", "`releaseClaim()`", "Deletes the `CLAIMED` row so the next retry can run."]
+        ]
+      },
+      "hunk_ids": ["H007:35-51"]
     },
     {
       "id": "step-4",
+      "layer": "wiring",
+      "title": "Wrap /webhooks/:provider with the dedup guard",
+      "explanation": "Registers `PostgresIdempotencyStore` in the container and guards `WebhookDispatcher` inside `webhookRouter`.",
+      "visuals": [
+        {
+          "src": "sample-webhook-ui.png",
+          "source_label": "Figma / App UI",
+          "figma_url": "https://www.figma.com/design/demoWebhookSpec/Payments-Console?node-id=18-204",
+          "caption": "Admin Console: duplicate retries short-circuit with `200 deduplicated` (top right), while active runs hold a 60s `CLAIMED` lease.",
+          "annotations": [
+            {
+              "kind": "circle",
+              "x": 86.2,
+              "y": 42.7,
+              "rx": 8.2,
+              "ry": 5.8,
+              "label": "Short-circuit 200 response"
+            },
+            {
+              "kind": "arrow",
+              "from_x": 60.0,
+              "from_y": 29.0,
+              "to_x": 77.2,
+              "to_y": 41.0,
+              "label": "decision != PROCESS"
+            },
+            {
+              "kind": "circle",
+              "x": 69.1,
+              "y": 59.6,
+              "rx": 8.4,
+              "ry": 5.2
+            },
+            {
+              "kind": "arrow",
+              "from_x": 52.0,
+              "from_y": 73.0,
+              "to_x": 60.5,
+              "to_y": 62.0,
+              "label": "Active 60s CLAIMED lease"
+            }
+          ]
+        }
+      ],
+      "callouts": [
+        {
+          "kind": "question",
+          "text": "If `releaseClaim()` throws during a DB outage inside `catch` (`webhooks.ts` L34), it hides the original error from `WebhookDispatcher`."
+        }
+      ],
+      "hunk_ids": ["H003", "H002"]
+    },
+    {
+      "id": "step-5",
       "layer": "verification",
-      "title": "Audit unit tests (and catch a mocked-SQL bug!)",
-      "why_now": "GitHub put `__tests__/webhook-dedup.test.ts` as File #1, where it looked reasonable—but reading it AFTER `store.ts` immediately exposes a bug in the AI-generated mock!",
-      "explanation": "Tests duplicate suppression and expired-lease takeover using a mocked `db.query`.",
+      "title": "Audit unit tests (catches a broken mock test)",
+      "explanation": "Checks duplicate skipping and expired-lease recovery against a mocked `db.query` function.",
       "callouts": [
         {
           "kind": "risk",
-          "text": "Broken/tautological test in `H001` L7-14: the mock returns `rows: [{ status: 'COMPLETED' }]`, so `res.rows.length > 0` in `store.ts` will actually return `{ action: 'PROCESS' }`, NOT `{ action: 'SKIP_ALREADY_PROCESSED' }` (and `store.ts` never even emits `SKIP_ALREADY_PROCESSED`!). This test would fail if run!"
+          "text": "Bug in `webhook-dedup.test.ts` L7–14: the mock returns a row, so `store.ts` returns `PROCESS` instead of `SKIP_ALREADY_PROCESSED`."
         }
       ],
       "untested_gaps": [
-        "Tests mock `db.query`, so the actual PostgreSQL `ON CONFLICT ... WHERE` SQL query is never executed against a real database.",
-        "No route-level test covering missing `eventId` (400), successful `markCompleted`, or `releaseClaim` on downstream failure."
+        "Mocks `db.query`, so the real Postgres `ON CONFLICT` SQL never runs.",
+        "No route test checks missing `eventId` (`400`) or `releaseClaim()` when `WebhookDispatcher` throws."
       ],
       "hunk_ids": ["H001"]
     }
@@ -131,8 +196,8 @@
   "mechanical": {
     "groups": [
       {
-        "title": "Barrel re-exports & lockfile resolution",
-        "reason": "Re-exports new idempotency modules in `index.ts` and updates `pnpm-lock.yaml`; no runtime logic.",
+        "title": "Barrel exports & lockfile",
+        "reason": "Re-exports new files in `index.ts` and updates `pnpm-lock.yaml` metadata.",
         "hunk_ids": ["H004", "H006"]
       }
     ]

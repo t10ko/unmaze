@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Deterministic Git/PR diff parser and deep-link inventory builder for unmaze.
+"""Deterministic Git/PR diff parser, context expander, and deep-link builder for unmaze.
 
 Parses unified diffs from GitHub PRs (`gh pr diff`), git revision ranges, staged/working
 changes, or `.patch` files into a structured `diff-manifest.json` with stable Hunk IDs
-(`H001`, `H002`, ...) and exact PR/blob deep links, plus a token-efficient
-`hunks-readable.txt` digest for the reviewing agent.
+(`H001`, `H002`, ...), expandable before/after surrounding file lines, and exact PR/blob
+deep links, plus a token-efficient `hunks-readable.txt` digest for the reviewing agent.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -24,6 +25,11 @@ HUNK_HEADER_RE = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: (.*))?$"
 )
 DIFF_GIT_RE = re.compile(r"^diff --git (.+)$")
+FIGMA_URL_RE = re.compile(r"https?://(?:www\.)?figma\.com/(?:design|file|proto|board)/[^\s)>\"]+")
+MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((https?://[^\s)]+)\)")
+HTML_IMG_RE = re.compile(r"<img\b[^>]*?\bsrc=[\"'](https?://[^\"']+)[\"'][^>]*>", re.IGNORECASE)
+
+MAX_EXPAND_LINES = 60
 
 LOCKFILE_NAMES = {
     "package-lock.json",
@@ -60,7 +66,9 @@ GENERATED_SUFFIXES = (
 )
 
 
-def run_cmd(cmd: list[str], cwd: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_cmd(
+    cmd: list[str], cwd: str | None = None, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
         cwd=cwd,
@@ -123,7 +131,6 @@ def parse_diff_git_paths(rest: str) -> tuple[str, str]:
     """Extract (old_path, new_path) from `diff --git <old> <new>`."""
     rest = rest.strip()
     if rest.startswith('"'):
-        # Parse first quoted token
         i = 1
         while i < len(rest):
             if rest[i] == "\\":
@@ -136,8 +143,6 @@ def parse_diff_git_paths(rest: str) -> tuple[str, str]:
         second = unquote_git_path(rest[i + 1 :].strip())
         return strip_ab_prefix(first, "a/"), strip_ab_prefix(second, "b/")
 
-    # Standard unquoted `a/foo b/foo`: look for ` b/` boundary
-    # If multiple ` b/` exist, prefer symmetric path if old==new
     b_indices = [m.start() for m in re.finditer(r" b/", rest)]
     for idx in b_indices:
         left = rest[:idx]
@@ -177,14 +182,18 @@ def classify_file_hint(path: str) -> str:
         return "test"
 
     if (
-        any(seg in {"migrations", "schema", "schemas", "proto", "protos", "graphql", "types", "DTO", "dto", "contracts"} for seg in parts)
+        any(
+            seg in {"migrations", "schema", "schemas", "proto", "protos", "graphql", "types", "dto", "contracts"}
+            for seg in parts
+        )
         or lower_name.endswith((".proto", ".graphql", ".gql", ".sql", ".prisma", ".d.ts"))
         or any(tok in lower_name for tok in ("schema", "types.", "interface", "contract", "dto.", "model."))
     ):
         return "contracts"
 
     if (
-        lower_name in {
+        lower_name
+        in {
             "package.json",
             "pyproject.toml",
             "cargo.toml",
@@ -213,7 +222,6 @@ def normalize_repo_web_url(remote_url: str) -> tuple[str | None, str | None]:
     if not raw:
         return None, None
 
-    # git@host:owner/repo.git
     ssh_match = re.match(r"^git@([^:]+):(.+?)(?:\.git)?/?$", raw)
     if ssh_match:
         host, repo_path = ssh_match.group(1), ssh_match.group(2)
@@ -338,7 +346,6 @@ def parse_unified_diff(
         finalize_hunk()
         if cur_file is None:
             return
-        # Ensure files with pure renames, binary changes, or empty additions still get a Hunk ID
         if not cur_file["hunk_ids"]:
             hid = next_hunk_id()
             status = cur_file["status"]
@@ -346,7 +353,9 @@ def parse_unified_diff(
             if cur_file["is_binary"]:
                 summary_line = f"[Binary file {status}: {display_path}]"
             elif status == "renamed":
-                summary_line = f"[Pure file rename: {cur_file['old_path']} -> {cur_file['new_path']} (no content changes)]"
+                summary_line = (
+                    f"[Pure file rename: {cur_file['old_path']} -> {cur_file['new_path']} (no content changes)]"
+                )
             elif status == "added":
                 summary_line = f"[Empty file added: {display_path}]"
             elif status == "deleted":
@@ -385,6 +394,8 @@ def parse_unified_diff(
                     new_count=0,
                     is_synthetic=True,
                 ),
+                "context_before": [],
+                "context_after": [],
                 "lines": [
                     {
                         "kind": "meta",
@@ -428,7 +439,6 @@ def parse_unified_diff(
             i += 1
             continue
 
-        # File-level metadata headers (only when not inside a hunk, or if a metadata line appears before @@)
         if cur_hunk is None:
             if line.startswith("new file mode "):
                 cur_file["status"] = "added"
@@ -481,7 +491,6 @@ def parse_unified_diff(
             if line.startswith("Binary files ") or line == "GIT binary patch":
                 cur_file["is_binary"] = True
                 if line == "GIT binary patch":
-                    # Advance until next `diff --git`
                     i += 1
                     while i < len(lines) and not DIFF_GIT_RE.match(lines[i]):
                         i += 1
@@ -532,6 +541,8 @@ def parse_unified_diff(
                     new_count=new_count,
                     is_synthetic=False,
                 ),
+                "context_before": [],
+                "context_after": [],
                 "lines": [],
             }
             i += 1
@@ -581,7 +592,6 @@ def parse_unified_diff(
                     }
                 )
             elif line == "":
-                # Blank context line where trailing space was stripped by an editor/mailer
                 cur_hunk["lines"].append(
                     {
                         "kind": "ctx",
@@ -608,6 +618,200 @@ def parse_unified_diff(
     return files, hunks
 
 
+def load_post_image_lines(
+    file_path: str,
+    *,
+    meta: dict[str, Any],
+    repo_dir: str,
+    context_dir: str | None = None,
+) -> list[str] | None:
+    """Load the post-change lines of `file_path` so hunks can offer 'Show more above/below'."""
+    if not file_path or file_path == "/dev/null":
+        return None
+
+    # 1. Explicit context directory override (useful for offline patch demos & tests)
+    if context_dir:
+        candidate = Path(context_dir) / file_path
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    source_type = meta.get("source_type")
+    head_sha = meta.get("head_sha") or meta.get("head_ref")
+
+    # 2. Staged index (`:path`)
+    if source_type == "staged":
+        res = run_cmd(["git", "show", f":{file_path}"], cwd=repo_dir, check=False)
+        if res.returncode == 0:
+            return res.stdout.splitlines()
+
+    # 3. Working tree on disk
+    if source_type == "working_tree":
+        wt_file = Path(repo_dir) / file_path
+        if wt_file.is_file():
+            return wt_file.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    # 4. Git commit / ref (`<head_sha>:<path>`)
+    if head_sha and source_type in {"git_range", "github_pr"}:
+        res = run_cmd(["git", "show", f"{head_sha}:{file_path}"], cwd=repo_dir, check=False)
+        if res.returncode == 0:
+            return res.stdout.splitlines()
+
+    # 5. Remote GitHub API fallback for unfetched PR branches (skip lockfiles/generated)
+    if (
+        source_type == "github_pr"
+        and meta.get("host_kind") == "github"
+        and meta.get("repo_web_url")
+        and head_sha
+    ):
+        m = re.match(r"^https?://[^/]+/([^/]+/[^/]+)$", str(meta["repo_web_url"]))
+        if m:
+            owner_repo = m.group(1)
+            api_res = run_cmd(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{owner_repo}/contents/{file_path}?ref={head_sha}",
+                    "--jq",
+                    ".content",
+                ],
+                cwd=repo_dir if os.path.isdir(repo_dir) else None,
+                check=False,
+            )
+            if api_res.returncode == 0 and api_res.stdout.strip():
+                try:
+                    decoded = base64.b64decode(api_res.stdout).decode("utf-8", errors="replace")
+                    return decoded.splitlines()
+                except Exception:
+                    return None
+
+    return None
+
+
+def attach_surrounding_context(
+    files: list[dict[str, Any]],
+    hunks: list[dict[str, Any]],
+    *,
+    file_lines_lookup: dict[str, list[str]],
+    max_expand: int = MAX_EXPAND_LINES,
+) -> None:
+    """Populate `context_before` and `context_after` on each hunk without overlapping neighbors."""
+    hunk_by_id = {h["id"]: h for h in hunks}
+
+    for f in files:
+        if f["status"] == "deleted" or f["is_binary"] or f["category_hint"] == "generated_or_lockfile":
+            continue
+        full_lines = file_lines_lookup.get(f["path"])
+        if not full_lines:
+            continue
+
+        file_hunks = [
+            hunk_by_id[hid]
+            for hid in f["hunk_ids"]
+            if not hunk_by_id[hid]["is_synthetic"]
+        ]
+        if not file_hunks:
+            continue
+
+        total_len = len(full_lines)
+
+        for idx, h in enumerate(file_hunks):
+            new_start = h["new_start"]
+            new_count = h["new_count"]
+            old_start = h["old_start"]
+            old_count = h["old_count"]
+
+            h_new_first = max(1, new_start)
+            h_new_last = new_start + new_count - 1 if new_count > 0 else max(0, new_start)
+
+            # Determine non-overlapping boundary with previous hunk
+            if idx == 0:
+                before_floor = 1
+            else:
+                prev = file_hunks[idx - 1]
+                prev_last = (
+                    prev["new_start"] + prev["new_count"] - 1
+                    if prev["new_count"] > 0
+                    else max(0, prev["new_start"])
+                )
+                # Split the gap between prev.context_after and h.context_before cleanly at midpoint
+                gap_start = prev_last + 1
+                gap_end = h_new_first - 1
+                if gap_end < gap_start:
+                    before_floor = h_new_first
+                else:
+                    mid = (gap_start + gap_end) // 2
+                    before_floor = mid + 1
+
+            before_ceil = h_new_first - 1
+            if before_ceil >= before_floor and before_ceil <= total_len:
+                start_ln = max(before_floor, before_ceil - max_expand + 1)
+                delta_before = old_start - new_start
+                h["context_before"] = [
+                    {
+                        "old_line": max(1, nl + delta_before),
+                        "new_line": nl,
+                        "content": full_lines[nl - 1],
+                    }
+                    for nl in range(start_ln, before_ceil + 1)
+                ]
+
+            # Determine non-overlapping boundary with next hunk
+            if idx == len(file_hunks) - 1:
+                after_ceil = total_len
+            else:
+                nxt = file_hunks[idx + 1]
+                nxt_first = max(1, nxt["new_start"])
+                gap_start = h_new_last + 1
+                gap_end = nxt_first - 1
+                if gap_end < gap_start:
+                    after_ceil = h_new_last
+                else:
+                    after_ceil = (gap_start + gap_end) // 2
+
+            after_floor = h_new_last + 1
+            if after_ceil >= after_floor and after_floor <= total_len:
+                end_ln = min(total_len, after_ceil, after_floor + max_expand - 1)
+                old_end = old_start + old_count - 1 if old_count > 0 else old_start
+                delta_after = old_end - h_new_last
+                h["context_after"] = [
+                    {
+                        "old_line": max(1, nl + delta_after),
+                        "new_line": nl,
+                        "content": full_lines[nl - 1],
+                    }
+                    for nl in range(after_floor, end_ln + 1)
+                ]
+
+
+def extract_visual_refs_from_text(text: str) -> dict[str, list[dict[str, str]]]:
+    """Extract Figma URLs and embedded screenshot URLs from PR descriptions or commit text."""
+    if not text:
+        return {"figma_urls": [], "image_urls": []}
+
+    seen_figma: set[str] = set()
+    figma_list: list[dict[str, str]] = []
+    for m in FIGMA_URL_RE.finditer(text):
+        url = m.group(0).rstrip(".,;]")
+        if url not in seen_figma:
+            seen_figma.add(url)
+            figma_list.append({"url": url})
+
+    seen_img: set[str] = set()
+    img_list: list[dict[str, str]] = []
+    for m in MD_IMAGE_RE.finditer(text):
+        alt, url = m.group(1).strip(), m.group(2).strip()
+        if url not in seen_img:
+            seen_img.add(url)
+            img_list.append({"url": url, "alt": alt})
+    for m in HTML_IMG_RE.finditer(text):
+        url = m.group(1).strip()
+        if url not in seen_img:
+            seen_img.add(url)
+            img_list.append({"url": url, "alt": ""})
+
+    return {"figma_urls": figma_list, "image_urls": img_list}
+
+
 def detect_default_branch(cwd: str) -> str:
     res = run_cmd(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=cwd, check=False)
     if res.returncode == 0 and res.stdout.strip():
@@ -631,9 +835,9 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
         "base_ref": None,
         "head_ref": None,
         "head_sha": None,
+        "detected_visuals": {"figma_urls": [], "image_urls": []},
     }
 
-    # Try detecting git remote URL if inside a git worktree
     git_check = run_cmd(["git", "rev-parse", "--is-inside-work-tree"], cwd=cwd, check=False)
     in_git = git_check.returncode == 0
 
@@ -652,7 +856,6 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
         _, host_kind = normalize_repo_web_url(meta["pr_url"])
         meta["host_kind"] = host_kind
 
-    # 1. Explicit patch file or stdin
     if args.patch:
         meta["source_type"] = "patch"
         if args.patch == "-":
@@ -664,7 +867,6 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
             meta["title"] = meta["title"] or f"Patch Review: {patch_path.name}"
         return {"meta": meta, "diff_text": diff_text}
 
-    # 2. GitHub PR via `gh`
     if args.pr:
         meta["source_type"] = "github_pr"
         pr_target = str(args.pr).strip()
@@ -675,7 +877,7 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
                 "view",
                 pr_target,
                 "--json",
-                "number,title,url,baseRefName,headRefName,headRefOid",
+                "number,title,url,body,baseRefName,headRefName,headRefOid",
             ],
             cwd=cwd if in_git else None,
             check=False,
@@ -691,6 +893,7 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
         meta["base_ref"] = pr_info.get("baseRefName")
         meta["head_ref"] = pr_info.get("headRefOid") or pr_info.get("headRefName")
         meta["head_sha"] = pr_info.get("headRefOid")
+        meta["detected_visuals"] = extract_visual_refs_from_text(pr_info.get("body") or "")
         if meta["pr_url"]:
             pr_repo_match = re.match(r"^(https?://[^/]+/[^/]+/[^/]+)/pull/\d+", meta["pr_url"])
             if pr_repo_match:
@@ -716,7 +919,6 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
     meta["head_sha"] = head_sha
     meta["head_ref"] = head_sha or cur_branch
 
-    # 3. Staged or working tree
     if args.staged:
         meta["source_type"] = "staged"
         meta["title"] = meta["title"] or f"Staged Changes on `{cur_branch}`"
@@ -729,14 +931,12 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
         diff_res = run_cmd(["git", "diff", "HEAD", "--find-renames"], cwd=cwd)
         return {"meta": meta, "diff_text": diff_res.stdout}
 
-    # 4. Explicit git range or smart auto-detection
     git_range = args.range
     if not git_range:
         default_branch = detect_default_branch(cwd)
         if cur_branch != default_branch and cur_branch != "HEAD":
-            # Also check if there is an open PR for the current branch via `gh` (best effort)
             gh_probe = run_cmd(
-                ["gh", "pr", "view", "--json", "number,title,url,baseRefName,headRefOid"],
+                ["gh", "pr", "view", "--json", "number,title,url,body,baseRefName,headRefOid"],
                 cwd=cwd,
                 check=False,
             )
@@ -745,6 +945,7 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
                     pr_info = json.loads(gh_probe.stdout)
                     meta["pr_number"] = pr_info.get("number")
                     meta["pr_url"] = meta["pr_url"] or pr_info.get("url")
+                    meta["detected_visuals"] = extract_visual_refs_from_text(pr_info.get("body") or "")
                     if pr_info.get("title") and not meta["title"]:
                         meta["title"] = f"PR #{pr_info.get('number')}: {pr_info.get('title')}"
                     if meta["pr_url"] and "github" in meta["pr_url"]:
@@ -754,7 +955,6 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
                     pass
             git_range = f"{default_branch}...HEAD"
         else:
-            # On default branch: check uncommitted changes first, else HEAD~1..HEAD
             wt = run_cmd(["git", "diff", "HEAD", "--find-renames"], cwd=cwd, check=False)
             if wt.returncode == 0 and wt.stdout.strip():
                 meta["source_type"] = "working_tree"
@@ -765,6 +965,13 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
     meta["source_type"] = "git_range"
     meta["base_ref"] = git_range
     meta["title"] = meta["title"] or f"Changes in `{git_range}` ({cur_branch})"
+    if ".." in git_range:
+        rhs = git_range.split("..")[-1].strip() or "HEAD"
+        rhs_sha = run_cmd(["git", "rev-parse", rhs], cwd=cwd, check=False)
+        if rhs_sha.returncode == 0 and rhs_sha.stdout.strip():
+            meta["head_sha"] = rhs_sha.stdout.strip()
+            meta["head_ref"] = meta["head_sha"]
+
     diff_res = run_cmd(["git", "diff", "--find-renames", git_range], cwd=cwd, check=False)
     if diff_res.returncode != 0:
         raise RuntimeError(f"`git diff {git_range}` failed:\n{diff_res.stderr.strip()}")
@@ -783,6 +990,15 @@ def format_readable_digest(manifest: dict[str, Any], max_inline_lines: int = 250
     )
     if meta.get("pr_url"):
         out.append(f"PR URL: {meta['pr_url']}")
+    vis = meta.get("detected_visuals") or {}
+    if vis.get("figma_urls") or vis.get("image_urls"):
+        out.append("")
+        out.append("## Detected Visual & Figma References in PR")
+        for fg in vis.get("figma_urls") or []:
+            out.append(f"- Figma: {fg['url']}")
+        for im in vis.get("image_urls") or []:
+            lbl = f" ({im['alt']})" if im.get("alt") else ""
+            out.append(f"- Screenshot{lbl}: {im['url']}")
     out.append("")
     out.append("## File & Hunk Index (Every Hunk ID MUST be accounted for in plan.json)")
     for f in manifest["files"]:
@@ -845,6 +1061,10 @@ def main(argv: list[str] | None = None) -> int:
     source_group.add_argument("--patch", help="Path to a unified `.patch`/`.diff` file (or `-` for stdin)")
 
     parser.add_argument("--repo", default=".", help="Path to git repository (default: current directory)")
+    parser.add_argument(
+        "--context-dir",
+        help="Optional directory of post-change files to enable expandable before/after context on `.patch` inputs",
+    )
     parser.add_argument("--title", help="Override review title")
     parser.add_argument("--pr-url", help="Explicit PR web URL for deep links (optional)")
     parser.add_argument("--repo-url", help="Explicit repository web URL for deep links (optional)")
@@ -875,6 +1095,36 @@ def main(argv: list[str] | None = None) -> int:
         head_ref=meta.get("head_ref"),
     )
 
+    repo_abs = os.path.abspath(args.repo)
+    hunk_by_id = {h["id"]: h for h in hunks}
+    file_lines_lookup: dict[str, list[str]] = {}
+    for f in files:
+        if f["status"] == "deleted" or f["is_binary"] or f["category_hint"] == "generated_or_lockfile":
+            continue
+        loaded = load_post_image_lines(
+            f["path"],
+            meta=meta,
+            repo_dir=repo_abs,
+            context_dir=args.context_dir,
+        )
+        if loaded is None and f["status"] == "added":
+            synth_lines = [
+                ln["content"]
+                for hid in f["hunk_ids"]
+                if not hunk_by_id[hid]["is_synthetic"]
+                for ln in hunk_by_id[hid]["lines"]
+                if ln["kind"] in {"add", "ctx"}
+            ]
+            if synth_lines:
+                loaded = synth_lines
+        if loaded is not None:
+            file_lines_lookup[f["path"]] = loaded
+            if len(loaded) <= 5000:
+                f["post_lines"] = loaded
+
+    if file_lines_lookup:
+        attach_surrounding_context(files, hunks, file_lines_lookup=file_lines_lookup)
+
     total_add = sum(f["additions"] for f in files)
     total_del = sum(f["deletions"] for f in files)
     by_hint: dict[str, int] = {}
@@ -883,7 +1133,7 @@ def main(argv: list[str] | None = None) -> int:
         by_hint[hint] = by_hint.get(hint, 0) + 1
 
     manifest = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "meta": meta,
         "stats": {
             "total_files": len(files),

@@ -1,136 +1,151 @@
-# `plan.json` Schema Reference
+# `plan.json` Schema Reference (v0.3)
 
-`build_artifact.py` merges `diff-manifest.json` (verbatim diff lines & deep links) with `plan.json` (your cognitive reading order, architectural mental model, and reviewer callouts).
+`build_artifact.py` merges `diff-manifest.json` with `plan.json` to compile the Arc-sidebar review guide, cumulative timeline file states, clickable concept modals, and annotated UI/Figma screenshots.
 
-**Hard invariant:** Every hunk ID (`H001`..`HNNN`) in `diff-manifest.json` MUST appear **exactly once** across `steps[*].hunk_ids` and `mechanical.groups[*].hunk_ids`. `build_artifact.py` will exit with code `2` and list any missing, duplicate, or unknown hunk IDs if coverage is not 100%.
+**Hard invariant:** Every changed (`+`/`−`) line in every hunk (`H001`..`HNNN`) MUST be claimed **exactly once** across `steps[*].hunk_ids` and `mechanical.groups[*].hunk_ids` (using either whole-hunk `"H007"` or line-slice `"H007:1-34,52"` syntax).
 
-## Top-Level Structure
+---
+
+## Complete Example
 
 ```json
 {
-  "title": "PR #142: Idempotent Webhook Ingestion & Dead-Letter Retry",
+  "title": "PR #142: Idempotent Webhook Ingestion",
   "overview": {
-    "tldr": "One or two crisp sentences stating the problem solved and the core mechanism introduced.",
-    "global_context": "How the surrounding codebase works globally so a reviewer unfamiliar with this subsystem immediately knows where these files sit in the request/data lifecycle.",
-    "before_state": "How the system behaved prior to this diff (and what broke or was missing).",
-    "after_state": "How the system behaves now, including key guarantees or boundaries."
+    "tldr": "Saves each webhook ID in Postgres before running it so retried Stripe or GitHub callbacks never run twice.",
+    "global_context": "External providers POST signed payloads to `webhookRouter`, which calls `WebhookDispatcher` synchronously.",
+    "before_state": "Every retry ran `WebhookDispatcher` again and could double-charge customers.",
+    "after_state": "`webhookRouter` claims `(provider, event_id)` in `PostgresIdempotencyStore` first and skips duplicates with `200 OK`."
   },
   "architecture_map": {
     "nodes": [
-      {
-        "id": "gateway",
-        "label": "API Webhook Gateway",
-        "role": "Receives Stripe/GitHub POST callbacks",
-        "status": "unchanged",
-        "steps": []
-      },
-      {
-        "id": "dedup-store",
-        "label": "IdempotencyStore (Redis/PG)",
-        "role": "Atomic claim + TTL state transitions",
-        "status": "added",
-        "steps": ["step-1", "step-2"]
-      },
-      {
-        "id": "handler",
-        "label": "WebhookController",
-        "role": "Wires dedup guard around domain dispatch",
-        "status": "modified",
-        "steps": ["step-3"]
-      }
-    ],
-    "edges": [
-      { "from": "gateway", "to": "handler", "label": "POST /webhooks/:provider" },
-      { "from": "handler", "to": "dedup-store", "label": "claimOrSkip(eventId)" }
+      { "id": "senders", "label": "Stripe / GitHub", "status": "unchanged", "steps": [] },
+      { "id": "router", "label": "api/routes/webhooks.ts", "status": "modified", "steps": ["step-4"] },
+      { "id": "store", "label": "PostgresIdempotencyStore", "status": "added", "steps": ["step-2", "step-3"] },
+      { "id": "db", "label": "webhook_idempotency_keys", "status": "added", "steps": ["step-1"] },
+      { "id": "dispatcher", "label": "WebhookDispatcher", "status": "unchanged", "steps": [] }
     ]
   },
+  "concepts": [
+    {
+      "id": "webhook-dispatcher",
+      "term": "WebhookDispatcher",
+      "aliases": ["dispatchProviderWebhook", "webhookDispatcher"],
+      "file": "services/webhooks/dispatcher.ts",
+      "what_it_is": "Routes verified provider webhooks to domain handlers like billing and repository sync.",
+      "how_it_works": [
+        "**Execution model:** Runs synchronously inside the `POST /webhooks/:provider` HTTP handler with no background queue.",
+        "**Error handling:** Throws when a downstream handler fails so Express returns `500` and the provider retries later."
+      ],
+      "pr_impact": "Its own code is untouched, but `webhookRouter` now skips calling it whenever `PostgresIdempotencyStore` reports a duplicate event.",
+      "related_steps": ["step-4"]
+    }
+  ],
+  "chapters": [
+    {
+      "id": "ch-storage",
+      "title": "Lease Storage",
+      "summary": "Creates the SQL lease table and atomic claim query.",
+      "step_ids": ["step-1", "step-2"]
+    },
+    {
+      "id": "ch-guard",
+      "title": "Webhook Guard & UI",
+      "summary": "Adds completion/release helpers, wires the HTTP route, and audits tests.",
+      "step_ids": ["step-3", "step-4", "step-5"]
+    }
+  ],
   "steps": [
     {
       "id": "step-1",
       "layer": "contracts",
-      "slice": "Optional vertical slice label when PR has 2+ distinct features",
-      "title": "Define IdempotencyRecord states and storage interface",
-      "why_now": "Establish the three lifecycle states (CLAIMED, COMPLETED, FAILED) before reading the locking and retry logic that mutates them.",
-      "explanation": "Concise explanation of how these types/schemas shape the rest of the PR.",
-      "callouts": [
-        {
-          "kind": "decision",
-          "text": "Uses explicit status enum instead of boolean flag so crashed workers can expire and retry after `leaseTtlMs`."
-        }
-      ],
-      "hunk_ids": ["H004", "H005"],
-      "hunk_notes": {
-        "H004": "New DB migration adding composite unique index on (provider, event_id).",
-        "H005": "TypeScript domain contract consumed by both store and middleware."
-      }
+      "title": "SQL lease table and store contract",
+      "explanation": "Defines `webhook_idempotency_keys` and the `IdempotencyStore` types before any query logic uses them.",
+      "table": {
+        "headers": ["Status", "Meaning"],
+        "rows": [
+          ["`CLAIMED`", "A worker is currently running this event until `lease_expires_at`."],
+          ["`COMPLETED`", "The event finished and all future retries must skip it."]
+        ]
+      },
+      "hunk_ids": ["H005", "H008"]
     },
     {
       "id": "step-2",
       "layer": "core",
-      "title": "Implement atomic claim, lease expiration, and failure release",
-      "why_now": "With `IdempotencyRecord` defined, inspect the state machine where concurrency bugs or data loss could occur.",
-      "explanation": "Walks through atomic `INSERT ... ON CONFLICT` lease acquisition.",
+      "title": "Atomic claim query with 60s crash recovery",
+      "explanation": "Builds the initial `PostgresIdempotencyStore` with `claimOrSkip()` so only one worker wins a new or expired event.",
+      "points": [
+        { "anchor": "Conflict rule", "text": "`ON CONFLICT DO UPDATE` only steals an existing row if `status = 'CLAIMED'` and its lease expired." },
+        { "anchor": "Duplicate path", "text": "If Postgres updates zero rows, another worker owns or finished the event, so we skip it." }
+      ],
       "callouts": [
         {
           "kind": "assumption",
-          "text": "AI assumed a 60s default lease (`H002` L48). Verify no downstream webhook handler can legitimately run longer than 60s."
-        },
-        {
-          "kind": "risk",
-          "text": "Clock skew check relies on app-server `Date.now()` rather than DB `NOW()`."
+          "text": "The `catch` block returns `PROCESS` on DB errors (`store.ts` L29)—check whether billing webhooks must fail with `500` instead."
         }
       ],
-      "hunk_ids": ["H002", "H003"],
-      "hunk_notes": {}
+      "hunk_ids": ["H007:1-34,52"]
     },
     {
       "id": "step-3",
-      "layer": "wiring",
-      "title": "Wire dedup middleware into webhook routes and DI container",
-      "why_now": "Now that the store guarantees atomic claims, verify how HTTP routes and container bindings plug it into incoming requests.",
-      "explanation": "Registers `IdempotencyStore` singleton and wraps `/webhooks/:provider`.",
-      "callouts": [],
-      "hunk_ids": ["H001", "H006"]
+      "layer": "core",
+      "title": "Completion and rollback helpers on the store",
+      "explanation": "Adds `markCompleted()` and `releaseClaim()` onto `PostgresIdempotencyStore` so the HTTP route can finalize or free a lease.",
+      "hunk_ids": ["H007:35-51"]
     },
     {
       "id": "step-4",
-      "layer": "verification",
-      "title": "Verify duplicate suppression and crash-recovery tests",
-      "why_now": "Check which concurrency and failure paths are proven by tests—and what remains untested.",
-      "explanation": "Covers duplicate 200 OK short-circuiting and expired lease takeover.",
-      "untested_gaps": [
-        "No test covers simultaneous parallel requests arriving within the same millisecond (race test uses sequential calls).",
-        "DB connection failure mid-lease-update is mocked away rather than tested."
+      "layer": "wiring",
+      "title": "Protect /webhooks/:provider with the lease guard",
+      "explanation": "Wires `PostgresIdempotencyStore` into the container and wraps `WebhookDispatcher` inside `POST /webhooks/:provider`.",
+      "visuals": [
+        {
+          "src": "sample-webhook-ui.png",
+          "source_label": "Figma / App UI",
+          "figma_url": "https://www.figma.com/design/demo/Spec?node-id=18-204",
+          "caption": "Duplicate retries return `200 deduplicated` on the top right while in-flight events hold a 60s lease.",
+          "annotations": [
+            { "kind": "circle", "x": 86.2, "y": 42.7, "rx": 8.2, "ry": 5.8, "label": "200 deduplicated" },
+            { "kind": "arrow", "from_x": 60.0, "from_y": 29.0, "to_x": 77.2, "to_y": 41.0, "label": "decision != PROCESS" }
+          ]
+        }
       ],
-      "hunk_ids": ["H007"]
+      "hunk_ids": ["H003", "H002"]
+    },
+    {
+      "id": "step-5",
+      "layer": "verification",
+      "title": "Unit tests for duplicate skip and expired lease",
+      "explanation": "Checks duplicate skipping and stalled-lease takeover with a mocked database client.",
+      "untested_gaps": [
+        "Mocks `db.query`, so the real Postgres `ON CONFLICT` SQL never runs."
+      ],
+      "hunk_ids": ["H001"]
     }
   ],
   "mechanical": {
     "groups": [
       {
-        "title": "Barrel exports & lockfile updates",
-        "reason": "Pure re-exports in index.ts and pnpm-lock.yaml metadata; verified zero behavioral logic.",
-        "hunk_ids": ["H008", "H009"]
+        "title": "Barrel exports & lockfile",
+        "reason": "Re-exports new files in `index.ts` and updates `pnpm-lock.yaml`.",
+        "hunk_ids": ["H004", "H006"]
       }
     ]
   }
 }
 ```
 
-## Field Enumerations
+---
 
-- `steps[*].layer` *(required)*:
-  - `"contracts"` — Types, interfaces, DB migrations, protobuf/OpenAPI schemas, state definitions, constants.
-  - `"core"` — Domain logic, algorithms, state transitions, auth/permission checks, subtle bugfixes.
-  - `"wiring"` — Routes, controllers, UI prop threading, CLI flag registration, DI/bootstrap, config plumbing.
-  - `"verification"` — Unit/integration/e2e tests and assertions.
-- `steps[*].callouts[*].kind`:
-  - `"decision"` — Deliberate architectural or design tradeoff.
-  - `"assumption"` — Implicit assumption made by the author/AI that a human reviewer MUST validate against domain reality.
-  - `"risk"` — Concurrency, security, performance, backwards-compatibility, or edge-case hazard.
-  - `"question"` — Concrete question worth asking on the PR before approving.
-- `architecture_map.nodes[*].status`:
-  - `"unchanged"` — Existing surrounding module included as a landmark so the reviewer sees *where* the diff plugs into the global system.
-  - `"added"` — Newly introduced component/file.
-  - `"modified"` — Existing component with changed behavior.
-  - `"removed"` — Deleted/retired component.
+## Key Schema Capabilities
+
+1. **Sub-Hunk Slicing (`"H007:1-34,52"`) & Timeline File Evolution:**
+   - Any entry in `hunk_ids` can be a whole hunk (`"H007"`) or comma-separated `new_line` ranges (`"H007:1-34,52"`).
+   - At Step $N$, `build_artifact.py` renders each file as of Step $N$: slices from Steps $< N$ are already merged into the file, Step $N$'s slice shows as `+`/`−`, and slices from Steps $> N$ do not exist in the file yet (even inside `Show lines above/below` and `File at this step`).
+2. **Chapters / Virtual Stacked PRs (`chapters[]`):**
+   - `chapters[*].step_ids` must partition `steps[*].id` in exact reading order.
+3. **Clickable Concept Modals (`concepts[]`):**
+   - Matching backticked terms (`` `WebhookDispatcher` ``) or explicit `[[concept-id|Text]]` markers anywhere in `overview` or `steps` automatically turn into clickable modal triggers.
+4. **Rotated Visual Containers (`table`, `points`, `visuals`, `callouts`):**
+   - Keep `explanation` to **1 simple sentence**. Rotate `table` (`<= 5` rows) and `points` (`<= 5` bold-anchored 1-sentence bullets) so no step is a wall of prose.

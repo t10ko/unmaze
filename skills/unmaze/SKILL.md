@@ -1,17 +1,24 @@
 ---
 name: unmaze
-description: Transforms pull requests and git diffs into a shareable, step-by-step interactive code review guide ordered how humans understand code (global architecture map, data contracts, core logic, wiring, then verification and mechanical noise) with verified 100% diff coverage. Use when asked to review a PR, walk through a diff, explain branch changes, untangle a large AI-generated PR, or when invoked via /unmaze.
+description: Resurrects human code review in the AI era by turning sprawling pull requests and git diffs into a shareable, step-by-step interactive review guide—with Arc-style stacked PR chapters, cumulative file evolution across the timeline, clickable repo concept modals, annotated Figma/UI screenshots, and verified 100% diff coverage. Use when asked to review a PR, walk through a diff, explain branch changes, untangle a large AI-generated PR, or when invoked via /unmaze.
 argument-hint: "[pr-number | pr-url | git-range | --staged | path.patch]"
 license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.1.0"
+  version: "0.3.0"
 ---
 
-# unmaze — Guided Code Review in Human Reading Order
+# unmaze — Resurrecting Human Code Review in the AI Era
 
-GitHub and Git diffs sort files alphabetically (`a.ts` -> `z.ts`), forcing reviewers to read routes, tests, and boilerplate before they even know what data structures or core logic exist. `unmaze` untangles a diff into a **zero-forward-reference step-by-step walkthrough** with **100% deterministic hunk coverage**, and publishes it as an interactive HTML Artifact.
+GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at once on reviewers who didn't write the code by hand and may not know how that subsystem works globally. `unmaze` turns any PR or Git diff into a **guided, low-cognitive-load interactive Artifact** with:
+
+- **Arc-style Stacked PR Chapters** (splitting large PRs into small, logical virtual PRs),
+- **Cumulative Timeline File Evolution** (showing each file *as it exists at that step*, slicing large hunks with `H007:1-34,52` so future steps don't leak early),
+- **Clickable Repo Concept Modals** (explaining any touched module or domain term from scratch for an engineer who is new to the repo),
+- **Dynamic Visual Formatting Rotation** in **very simple English**,
+- **Annotated Figma & Real-App Screenshots** (red circles, boxes, and directional arrows), and
+- **100% deterministic changed-line accounting**.
 
 User arguments (if any): `$ARGUMENTS`
 
@@ -19,16 +26,16 @@ User arguments (if any): `$ARGUMENTS`
 
 ## Workflow
 
-### Step 1: Parse the Diff Deterministically
+### Step 1: Parse the Diff & Full Post-Change File Context
 
-Resolve `<SKILL_DIR>` as the directory containing this `SKILL.md` file. Always write intermediate files to a temporary directory (e.g., `WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/unmaze.XXXXXX")"`) so you never leave untracked files inside the repository being reviewed—unless the user explicitly asks to save files to a specific path.
+Resolve `<SKILL_DIR>` as the directory containing this `SKILL.md` file. Write working files to a temporary directory (`WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/unmaze.XXXXXX")"`) so you never leave untracked files in the repository being reviewed.
 
 Map `$ARGUMENTS` to `<SKILL_DIR>/scripts/parse_diff.py`:
-- **PR number or PR URL** (e.g., `142`, `#142`, `https://github.com/org/repo/pull/142`):
+- **PR number or URL** (`142`, `#142`, `https://github.com/org/repo/pull/142`):
   ```bash
   python3 "<SKILL_DIR>/scripts/parse_diff.py" --pr "<pr>" --out-dir "$WORK_DIR"
   ```
-- **Git revision range** (e.g., `main...HEAD`, `HEAD~3..HEAD`, `origin/main..feature`):
+- **Git revision range** (`main...HEAD`, `HEAD~3..HEAD`):
   ```bash
   python3 "<SKILL_DIR>/scripts/parse_diff.py" --range "<range>" --out-dir "$WORK_DIR"
   ```
@@ -40,65 +47,65 @@ Map `$ARGUMENTS` to `<SKILL_DIR>/scripts/parse_diff.py`:
   ```bash
   python3 "<SKILL_DIR>/scripts/parse_diff.py" --patch "<file>" --out-dir "$WORK_DIR"
   ```
-- **Empty `$ARGUMENTS`** (default):
+- **Empty `$ARGUMENTS`** (auto-detects current branch PR or `<default-branch>...HEAD`):
   ```bash
   python3 "<SKILL_DIR>/scripts/parse_diff.py" --out-dir "$WORK_DIR"
   ```
-  *(Auto-detects the open PR or `<default-branch>...HEAD` when on a feature branch, or uncommitted/last-commit changes when on the default branch.)*
 
 ---
 
-### Step 2: Build the Global Mental Model (Inspect Diff + Surrounding Repo)
+### Step 2: Gather Global Repo Context, Concepts & Visual References
 
-1. Read `$WORK_DIR/hunks-readable.txt` to inspect all hunk IDs (`H001`..`HNNN`), file paths, line numbers, and diff contents.
-2. **Do not review in a vacuum:** Briefly read or grep surrounding callers, entrypoints, or neighboring modules in the repository (2–5 targeted lookups) so you can:
-   - Explain **how this subsystem fits into the global architecture** for a reviewer who did not write this code.
-   - Include **1–2 `"unchanged"` landmark components** in `architecture_map.nodes` so the reviewer sees *where* the changed modules plug into the existing system.
-   - Spot codebase-specific risks (e.g., missing auth/tenant scoping compared to neighboring routes, duplicated utilities, broken invariants, or tautological tests).
+1. Read `$WORK_DIR/hunks-readable.txt` to inspect all hunk IDs (`H001`..`HNNN`), line numbers, and any Figma/screenshot URLs extracted from the PR description.
+2. Perform 2–6 targeted lookups in surrounding repo files so you understand **how the touched subsystem actually works from scratch** (who calls it, whether it runs sync or async, what DB tables/services it owns, and what happens on error). You will use these concrete facts to write **Concept Modals (`concepts[]`)** for reviewers who don't know this codebase!
+3. **Collect & Inspect Visual References (Figma / App Screenshots):**
+   - If Figma URLs exist and Figma MCP tools (`get_screenshot` / node export) are available, export the relevant frame PNG into `$WORK_DIR/visuals/` and attach `figma_url`.
+   - If UI screenshots exist in the PR, `$ARGUMENTS`, or can be captured from a running local app via Playwright/DevTools MCP, save them into `$WORK_DIR/visuals/`.
+   - **MANDATORY before adding annotations:** View every screenshot with your `Read` tool first, then place **red circles (`circle`), directional arrows (`arrow`), or boxes (`box`)** in `0..100` percentage coordinates pointing directly at what that step controls.
 
 ---
 
-### Step 3: Design the Human Reading Sequence (`plan.json`)
+### Step 3: Design `plan.json` (Chapters, Timeline Evolution, Concepts & Simple English)
 
 Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cognitive-order-guide.md`, then write `$WORK_DIR/plan.json`.
 
-Order steps by **zero forward references and decreasing cognitive criticality**:
-1. **`contracts` (Shapes & Contracts):** Data structures, DB schemas/migrations, interfaces, API payloads—*introduce the nouns before the verbs*.
-2. **`core` (Core Logic & Decisions):** Domain algorithms, state transitions, auth/security boundaries, and key tradeoffs—*spend the reviewer's freshest attention where real bugs live*. Keep steps bite-sized (1–5 hunks per step; split distinct mechanisms into separate steps).
-3. **`wiring` (Entrypoints & Wiring):** Routes, controllers, CLI flags, UI bindings, DI registration, config plumbing connecting `core` to the app. *(If a PR contains 2+ independent features, sequence `contracts -> core -> wiring` per feature slice using the `"slice"` label.)*
-4. **`verification` (Verification & Edge Cases):** What behaviors the tests prove, **plus explicit `untested_gaps`** calling out missing edge cases, race conditions, or over-mocked tests.
-5. **`mechanical` (Appendix Drawer):** Pure boilerplate—lockfiles, generated artifacts, barrel exports, mechanical renames. Never bury behavioral changes inside `mechanical`.
+#### A. Virtual Stacked PRs (`chapters[]`) & Zero-Forward-Reference Order
+- For any PR with **4+ steps or 2+ logical concerns**, group `steps` into ordered **`chapters`** (displayed as Arc-style tabs in the left sidebar: `PR 1`, `PR 2`, `PR 3`...), ordered so Chapter 2 builds cleanly on Chapter 1.
+- Inside each chapter, order steps from **`contracts` -> `core` -> `wiring` -> `verification`**, tucking lockfiles/exports into `mechanical` at the end.
 
-Ensure **every single Hunk ID** from `diff-manifest.json` appears **once and only once** across `steps[*].hunk_ids` and `mechanical.groups[*].hunk_ids`.
+#### B. Cumulative Timeline File Evolution & Sub-Hunk Slicing (`H007:1-34,52`)
+- `build_artifact.py` reconstructs each file **as it exists at Step $N$**: earlier steps are already merged into the file, Step $N$ glows `+`/`−`, and future steps **do not exist in that file yet**.
+- Whenever a single large hunk or new file mixes multiple stages (e.g., types + core method + later lifecycle helpers, or imports + logic), **slice it by line range** (`"H007:1-34,52"` in Step 2, `"H007:35-51"` in Step 3) so the file evolves cleanly step by step along the timeline!
+
+#### C. Project Concept Modals (`concepts[]`)
+- Define 3–8 `concepts` for key services, tables, queues, middlewares, or domain terms touched by this PR.
+- Write each concept **from scratch for a capable engineer who has never seen this project before**—plain, concrete engineering facts (owning file, callers, sync vs. async, failure behavior, and how this PR changes or relies on it). **Never** use childish metaphors or fairy-tale analogies.
+- Wrap concept names in backticks (`` `WebhookDispatcher` ``) or `[[concept-id|Label]]` in step text so they automatically become clickable modal links!
+
+#### D. Simple English & Style Formatting Rotation (Mandatory)
+- **Very Simple English:** Keep every sentence short (<= 20 words), one idea per sentence. Use plain everyday verbs (*saves, checks, skips, calls, fails, deletes*)—ban heavy AI words (*orchestrates, leverages, materializes, facilitates, subsequently, aforementioned*).
+- **1-Sentence Invariant & 5-Item Cap:** `explanation` MUST be **1 single plain-English sentence** (BLUF). Cap `points`, `table.rows`, `callouts`, and `untested_gaps` at **<= 5 items**, with <= 1 sentence per item.
+- **Dynamic Visual Modulation (Rotate Containers):** Never write walls of prose. After the 1-sentence `explanation`, pair the diff with the container that fits the step's shape—a compact `table` for state/input->outcome rules, bold-anchored `points` (`{"anchor": "...", "text": "..."}`) for mechanics, `visuals` for UI/Figma screens, and `callouts` only for real risks/assumptions.
 
 ---
 
-### Step 4: Compile & Verify 100% Diff Coverage
-
-Run `build_artifact.py`:
+### Step 4: Compile & Verify 100% Changed-Line Coverage
 
 ```bash
 python3 "<SKILL_DIR>/scripts/build_artifact.py" \
   --manifest "$WORK_DIR/diff-manifest.json" \
   --plan "$WORK_DIR/plan.json" \
+  --assets-dir "$WORK_DIR" \
   --out "$WORK_DIR/unmaze-review.html" \
   --markdown-out "$WORK_DIR/unmaze-review.md"
 ```
 
-If `build_artifact.py` exits with code `2` (missing, duplicate, or invalid hunk IDs), fix `$WORK_DIR/plan.json` immediately and re-run until it succeeds with `✓ Verified 100% diff coverage`.
+If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, invalid chapter ordering, or schema error), fix `$WORK_DIR/plan.json` and re-run until `✓ Verified 100% diff coverage` succeeds.
 
 ---
 
 ### Step 5: Publish Artifact & Present Concise Summary
 
-1. **Publish as a Shareable Claude Code Artifact (Primary):**
-   - If the `Artifact` tool is available in your environment, read `$WORK_DIR/unmaze-review.html` and invoke the `Artifact` tool with that complete self-contained HTML so the user receives a live, shareable `claude.ai/code/artifact/...` link (remind them they can click **Share** in the artifact header to share with teammates or paste into the PR description).
-2. **Local Browser Fallback:**
-   - Always include the local path `$WORK_DIR/unmaze-review.html` (and `$WORK_DIR/unmaze-review.md`). If the `Artifact` tool is not available (e.g., API-key session or non-Claude harness) or the user passed `--open`, offer or open `$WORK_DIR/unmaze-review.html` locally.
-3. **Keep Chat Output Short & High-Signal:**
-   - Do **not** dump the entire walkthrough into chat—that's what the interactive Artifact is for.
-   - In chat, give:
-     1. The **TL;DR** + cognitive budget breakdown (e.g., *"19 files / +840 lines -> 4 core steps (185 lines) + wiring/tests + 480 lines of mechanical noise"*).
-     2. The **numbered step list** (1 line per step).
-     3. The top **risks / AI assumptions / untested gaps** that deserve human scrutiny.
-     4. The **Artifact link** (and local HTML/Markdown file paths).
+1. **Publish via Claude Code `Artifact` tool (Primary):** Read `$WORK_DIR/unmaze-review.html` and invoke the `Artifact` tool so the user receives a live shareable `claude.ai/code/artifact/...` URL.
+2. **Local Fallback:** Include `$WORK_DIR/unmaze-review.html` (and `$WORK_DIR/unmaze-review.md`), opening locally only if `Artifact` is unavailable or `--open` was passed.
+3. **Low-Load Chat Summary:** Give a 1-sentence BLUF, a compact chapter/step table, top risks/gaps, and the Artifact link.
