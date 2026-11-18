@@ -3024,10 +3024,11 @@ def build_html_artifact(
 
     concepts_bar_html = ""
     if concepts:
+        new_tag_html = ' <span class="concept-new-tag">new</span>'
         c_btns = "".join(
             f'<button type="button" class="concept-chip" data-concept="{esc(c["id"])}">'
             f'{esc(c["term"])}'
-            f'{" <span class=\"concept-new-tag\">new</span>" if c.get("origin") == "introduced" else ""}'
+            f'{new_tag_html if c.get("origin") == "introduced" else ""}'
             f' <span class="concept-dot" aria-hidden="true">?</span></button>'
             for c in concepts
         )
