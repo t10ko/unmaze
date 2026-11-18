@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.8.0"
+  version: "0.9.0"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
@@ -97,8 +97,13 @@ A reviewer must be able to answer **"what does this PR touch, and what could bre
 - **`overview.before_state` & `overview.after_state`:** 1 short, casual sentence each showing life before vs. after.
 
 #### B. Chapters (`chapters[]`), 2-Level Area Scopes (`file_scopes`), & Zero-Forward-Reference Order
-- For any PR with **4+ steps or 2+ logical concerns**, group `steps` into ordered **`chapters`** (displayed as Arc-style tabs in the left sidebar: `Chapter 1`, `Chapter 2`, `Chapter 3`...), ordered so Chapter 2 builds cleanly on Chapter 1.
+- For any PR with **4+ steps or 2+ logical concerns**, group `steps` into ordered **`chapters`** (displayed as Arc-style tabs in the left sidebar: `Chapter 1`, `Chapter 2`, `Chapter 3`...), ordered so Chapter 2 builds cleanly on Chapter 1. When a PR spans several services or packages, one chapter per service usually reads best.
 - Inside each chapter, order steps from **`contracts` -> `core` -> `wiring` -> `verification`**, tucking lockfiles/exports into `mechanical` at the end.
+- **Every step must be worth a reviewer's stop (Step Budget, compiler-enforced):** about **one step per ~150 lines of production code**, between 5 and 12 steps in total, with 2–5 steps per chapter. Tests, docs and lockfiles don't count toward the budget. To stay inside it:
+  - **Fold tests into the step whose code they prove** (the step's diff cards just include the test file). Keep a standalone tests step only when the tests are the point, or one final tests step for a small PR.
+  - **Merge a small `contracts` step** (request/response shapes, types) into the `core` step that uses it.
+  - **Merge tiny steps** (under ~12 changed lines, e.g. mounting one route or adding one client) into the neighbour they serve.
+  - **Put plans, docs, decision logs and evidence files in `mechanical` groups**, which render in the **Appendix**, with a one-line `reason`; link the important ones from `overview.links` instead of walking reviewers through them.
 - Define top-level **`file_scopes`** mapping each changed file path to a 2-level `{ "surface": "...", "area": "..." }` pair (`surface` in `"Frontend"`, `"Backend & API"`, `"Database & Contracts"`, `"Tests & QA"`, `"Infra & Config"`; `area` as a clean 2–3 word feature/module part like `"Explore Metric Drawer"` or `"Rule Counts Route"`—**never** an exact filename). This powers the pronounced Top-Bar Area Filter so FE or BE reviewers can isolate their areas in one click.
 
 #### C. Cumulative Timeline File Evolution & Sub-Hunk Slicing (`H007:1-34,52`)
@@ -149,7 +154,7 @@ Now switch back to **full repository + diff context** (`Read` / `Grep` + `$WORK_
 1. Read `$WORK_DIR/sweep2-input.json`. For **every** confirmed concept in `confirmed_concepts_to_explain_in_sweep_2`:
    - Verify the real owning file, callers, sync vs. async execution, edge cases, and PR impact in the codebase/diff.
    - Write `"concepts": [...]` **super casually** (`id`, `term`, `origin`, `file`, `what_it_is`, `how_it_works` bullets, `pr_impact`, `related_steps`)—accurate engineering facts, zero fairy-tale metaphors.
-2. Walk `prose_slots` top-to-bottom and write `"rewrites": { ... }` wrapping `[[concept-id|exact phrase in text]]` **every time any confirmed concept is talked about** across `overview`, `chapters`, `steps`, `points`, `table`, `visuals[*].caption`, `diff_highlights`, `callouts`, and `untested_gaps`—including indirect casual phrasing (`[[claimed-lease|its 60s timer ran out]]`, `[[idempotency-store|frees the lock]]`), while skipping generic English coincidences (*"as a rule"*, *"not an issue"*). Link a concept at most once per single sentence, while re-linking in every new sentence, bullet, cell, caption, and step!
+2. Walk `prose_slots` top-to-bottom and write `"rewrites": { ... }` wrapping `[[concept-id|exact phrase in text]]` **every time any confirmed concept is talked about** across `overview`, `chapters`, `steps`, `points`, `table`, `visuals[*].caption`, `diff_highlights`, `callouts`, and `untested_gaps`—including indirect casual phrasing (`[[claimed-lease|its 60s timer ran out]]`, `[[idempotency-store|frees the lock]]`), while skipping generic English coincidences (*"as a rule"*, *"not an issue"*). Link each concept **once per step** (its first mention there); the builder renders later mentions in the same step as plain text anyway. **Never link a vague phrase** like *"the report"*, *"the key"* or *"it"*—link a phrase that names the thing (*"the Impact Report tab"*), or leave it unlinked; `apply` rejects vague links.
 3. **Apply Sweep 2** (verifies Sweep 1 ran, verifies every confirmed concept has a grounded explanation, validates all slot paths & `[[...]]` links, and marks `"concept_sweep_completed": true`):
    ```bash
    python3 "<SKILL_DIR>/scripts/concept_sweep.py" apply \
@@ -170,7 +175,7 @@ python3 "<SKILL_DIR>/scripts/build_artifact.py" \
   --markdown-out "$WORK_DIR/unmaze-review.md"
 ```
 
-If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, missing red-marked screenshots, skipped Sweep 1/Sweep 2, or schema error), fix the reported issue and re-run until `✓ Verified 100% diff coverage` succeeds.
+If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, too many steps for the step budget, missing ship facts, missing red-marked screenshots, skipped Sweep 1/Sweep 2, or schema error), fix the reported issue and re-run until `✓ Verified 100% diff coverage` succeeds.
 
 ---
 

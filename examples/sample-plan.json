@@ -306,8 +306,8 @@
     {
       "id": "step-3",
       "layer": "core",
-      "title": "Finish and undo helpers on [[idempotency-store|the store]]",
-      "explanation": "Now we add `markCompleted()` and `releaseClaim()` onto `PostgresIdempotencyStore` so [[webhook-router|the route]] can finish or [[claimed-lease|undo a lock]].",
+      "title": "Finish and undo helpers on the store",
+      "explanation": "Now we add `markCompleted()` and `releaseClaim()` onto `PostgresIdempotencyStore` so the route can finish or [[claimed-lease|undo a lock]].",
       "table": {
         "headers": [
           "What Happened in Route",

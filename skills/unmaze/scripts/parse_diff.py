@@ -177,6 +177,11 @@ def classify_file_hint(path: str) -> str:
     if any(seg in {"dist", "build", "vendor", ".next", "coverage", "__snapshots__"} for seg in parts):
         return "generated_or_lockfile"
 
+    if lower_name.endswith((".md", ".mdx", ".rst", ".adoc")) or any(
+        seg in {"docs", "doc", "adr", "adrs", "rfcs"} for seg in parts[:-1]
+    ):
+        return "docs"
+
     if (
         any(seg in {"test", "tests", "__tests__", "spec", "specs", "e2e"} for seg in parts)
         or ".test." in lower_name

@@ -34,7 +34,8 @@ A PR is often one piece of a bigger task. Reviewers need the big picture, but th
 
 When a PR has more than ~4 steps or touches multiple subsystems (e.g., DB storage + API routes + Admin UI):
 - Split the review into **2–5 ordered chapters** (`Chapter 1`, `Chapter 2`, `Chapter 3`), ordered by dependency so `Chapter 1` makes complete sense on its own before `Chapter 2` builds on it.
-- Give each chapter its own tight `contracts -> core -> wiring -> verification` loop (2–4 steps per chapter), and tag `file_scopes` with semantic 2–3 word `area` names so FE and BE reviewers can filter to their own areas in the top bar.
+- Give each chapter its own tight `contracts -> core -> wiring -> verification` loop (**2–5 steps per chapter**), and tag `file_scopes` with semantic 2–3 word `area` names so FE and BE reviewers can filter to their own areas in the top bar.
+- **Spend steps where review attention matters (Step Budget):** about one step per ~150 lines of production code, 5–12 steps total (tests, docs and lockfiles don't count). Fold tests into the step they prove, merge tiny steps (< ~12 changed lines) and small `contracts` steps into their neighbours, and send plans, docs and evidence to the Appendix (`mechanical`). `build_artifact.py` rejects over-split reviews and names the steps to merge.
 
 ---
 
@@ -49,5 +50,5 @@ When an AI creates a large new file or big contiguous edit (`H007`, lines `1..18
 ## 5. Two-Sweep Concept Extraction, Grounded Explanations & Red-Marked Screenshots
 
 - **Sweep 1 — Extract & Filter Candidates Cold From the Written Text (`dump-prose` -> `save-candidates`):** Read the finished casual text with zero code bias, pull out candidate terms (both `"introduced"` by this task and `"existing"` in the repo), and filter out generic tech noise (`keep: false`) so only concepts worth explaining (`keep: true`) survive.
-- **Sweep 2 — Repo-Grounded Casual Explanations & Semantic Linking (`apply`):** Look up the actual owning files and callers in the repo/diff for **only** the confirmed `keep: true` concepts (never guess from prose!), write casual explanations, and wrap `[[concept-id|natural phrase]]` wherever those concepts are talked about—skipping everyday English coincidences (*"as a rule"*, *"not an issue"*).
+- **Sweep 2 — Repo-Grounded Casual Explanations & Semantic Linking (`apply`):** Look up the actual owning files and callers in the repo/diff for **only** the confirmed `keep: true` concepts (never guess from prose!), write casual explanations, and wrap `[[concept-id|natural phrase]]` wherever those concepts are talked about—skipping everyday English coincidences (*"as a rule"*, *"not an issue"*). Link each concept **once per step** (first mention), and never on a vague phrase like *"the report"* or *"it"*.
 - **Red-Marked Screenshots — Even on Backend PRs (`visuals[]`):** Trace backend, API, and DB changes forward to the frontend page, admin table, badge, or modal they power. Capture it (or export Figma), inspect it with `Read`, and draw red `circle`, `arrow`, or `box` marks showing what this code is for.

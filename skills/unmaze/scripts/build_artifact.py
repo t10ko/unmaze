@@ -81,6 +81,16 @@ MONOREPO_CONTAINER_DIRS = {
 }
 MAX_FOOTPRINT_ROWS = 8
 
+# Step budget: roughly one step per 150 lines of production code (tests, docs and lockfiles don't
+# count), plus a little room for contracts/wiring, clamped to 5..12 steps.
+STEP_BUDGET_LINES_PER_STEP = 150
+STEP_BUDGET_MIN = 5
+STEP_BUDGET_MAX = 12
+TINY_STEP_CHANGED_LINES = 12
+MAX_STEPS_PER_CHAPTER = 5
+DOC_FILE_SUFFIXES = (".md", ".mdx", ".rst", ".adoc")
+DOC_DIR_NAMES = {"docs", "doc", "adr", "adrs", "rfcs"}
+
 HUNK_SPEC_RE = re.compile(r"^(H\d{3,})(?::([\d,\-\s]+))?$")
 
 
@@ -290,6 +300,30 @@ def fmt_prose(value: Any, concept_lookup: dict[str, str] | None = None) -> str:
         if delim:
             out.append(esc(delim))
     return "".join(out)
+
+
+CONCEPT_LINK_HTML_RE = re.compile(
+    r'<button type="button" class="(concept-link(?: concept-link-code)?)" data-concept="([^"]+)">(.*?)</button>',
+    re.DOTALL,
+)
+
+
+def dedupe_concept_links(panel_html: str) -> str:
+    """Keep only the first clickable mention of each concept per panel (step or overview).
+
+    Later mentions in the same panel render as plain text (or plain inline code), so a step
+    doesn't turn every other phrase into a link. The chips row and modals stay untouched.
+    """
+    seen: set[str] = set()
+
+    def _repl(m: re.Match[str]) -> str:
+        cls, cid, label = m.group(1), m.group(2), m.group(3)
+        if cid not in seen:
+            seen.add(cid)
+            return m.group(0)
+        return f'<code class="inline-code">{label}</code>' if "concept-link-code" in cls else label
+
+    return CONCEPT_LINK_HTML_RE.sub(_repl, panel_html)
 
 
 def highlight_code_line(text: str, lang: str) -> str:
@@ -1593,6 +1627,76 @@ def build_change_footprint(manifest: dict[str, Any], plan: dict[str, Any]) -> li
     return declared_rows + auto_rows
 
 
+def hunk_review_kind(hunk: dict[str, Any]) -> str:
+    """`test`, `docs`, `generated`, or `code` — only `code` counts toward the step budget."""
+    hint = str(hunk.get("category_hint") or "")
+    if hint == "test":
+        return "test"
+    if hint == "generated_or_lockfile":
+        return "generated"
+    path = str(hunk.get("file_path") or "")
+    parts = [seg.lower() for seg in path.split("/")]
+    if hint == "docs" or path.lower().endswith(DOC_FILE_SUFFIXES) or any(seg in DOC_DIR_NAMES for seg in parts[:-1]):
+        return "docs"
+    return "code"
+
+
+def compute_step_budget(manifest: dict[str, Any]) -> tuple[int, int]:
+    """Return `(budget, production_changed_lines)` for the review."""
+    prod_lines = sum(
+        int(h.get("additions") or 0) + int(h.get("deletions") or 0)
+        for h in manifest.get("hunks", [])
+        if hunk_review_kind(h) == "code"
+    )
+    budget = -(-prod_lines // STEP_BUDGET_LINES_PER_STEP) + 3
+    return max(STEP_BUDGET_MIN, min(STEP_BUDGET_MAX, budget)), prod_lines
+
+
+def _check_step_budget(
+    manifest: dict[str, Any], plan: dict[str, Any], hunk_map: dict[str, dict[str, Any]], errors: list[str]
+) -> None:
+    steps = [st for st in plan.get("steps") or [] if isinstance(st, dict) and st.get("_slices") is not None]
+    budget, prod_lines = compute_step_budget(manifest)
+    if len(steps) <= budget:
+        return
+    has_code = any(hunk_review_kind(h) == "code" for h in hunk_map.values())
+    tests_only: list[str] = []
+    docs_only: list[str] = []
+    tiny: list[str] = []
+    for st in steps:
+        kinds = {hunk_review_kind(hunk_map[sl["hunk_id"]]) for sl in st["_slices"]}
+        changed = sum(len(sl["row_indices"]) for sl in st["_slices"])
+        if kinds == {"test"}:
+            tests_only.append(st["id"])
+        elif kinds == {"docs"} and has_code:
+            docs_only.append(st["id"])
+        elif changed < TINY_STEP_CHANGED_LINES:
+            tiny.append(f"{st['id']} ({changed} lines)")
+    big_chapters = [
+        f"{ch.get('id')} ({len(ch.get('step_ids') or [])} steps)"
+        for ch in plan.get("chapters") or []
+        if isinstance(ch, dict) and len(ch.get("step_ids") or []) > MAX_STEPS_PER_CHAPTER
+    ]
+    hints: list[str] = []
+    if tests_only:
+        hints.append(f"Fold tests into the step whose code they prove (tests-only steps: {', '.join(tests_only)}).")
+    if docs_only:
+        hints.append(
+            f"Move plans, docs and evidence into `mechanical` groups, which render in the Appendix "
+            f"(docs-only steps: {', '.join(docs_only)})."
+        )
+    if tiny:
+        hints.append(f"Merge tiny steps into the neighbour they serve: {', '.join(tiny)}.")
+    if big_chapters:
+        hints.append(f"Keep chapters to 2–{MAX_STEPS_PER_CHAPTER} steps: {', '.join(big_chapters)}.")
+    hints.append("Merge a small `contracts` step (request/response shapes, types) into the `core` step that uses it.")
+    errors.append(
+        f"Step Budget Check FAILED — {len(steps)} steps for ~{prod_lines:,} changed lines of production code "
+        f"(budget: {budget}; tests, docs and lockfiles don't count). Every step should be worth a reviewer's stop:\n"
+        + "\n".join(f"  - {h}" for h in hints)
+    )
+
+
 def validate_and_normalize_plan(
     manifest: dict[str, Any],
     plan: dict[str, Any],
@@ -1914,6 +2018,8 @@ def validate_and_normalize_plan(
             "  2. Sweep 2 (Explain confirmed concepts from repo/diff + link mentions): `concept_sweep.py apply`"
         )
 
+    _check_step_budget(manifest, plan, hunk_map, errors)
+
     # Enforce Mandatory Visual Grounding (even on backend PRs with a frontend consumer!)
     no_vis_reason = str(plan.get("no_visuals_justification") or "").strip()
     if total_annotated_visuals == 0 and len(no_vis_reason) < 20:
@@ -2129,7 +2235,7 @@ def render_scope_popover_html(surfaces_tree: list[dict[str, Any]]) -> str:
         s_count_txt = (
             f"{s_steps} step{'s' if s_steps != 1 else ''}"
             if s_steps > 0
-            else "Boilerplate"
+            else "Appendix"
         )
         area_rows: list[str] = []
         for area in surf["areas"]:
@@ -2139,7 +2245,7 @@ def render_scope_popover_html(surfaces_tree: list[dict[str, Any]]) -> str:
             a_count_txt = (
                 f"{a_steps} step{'s' if a_steps != 1 else ''}"
                 if a_steps > 0
-                else "Boilerplate"
+                else "Appendix"
             )
             area_rows.append(
                 f'<div class="scope-row scope-area-row">'
@@ -3002,7 +3108,7 @@ def build_html_artifact(
         mech_tab_html = (
             f'<button type="button" class="arc-tab arc-tab-muted" data-panel-index="{mech_idx}">'
             f'<span class="arc-ch-num">⚙</span>'
-            f'<span class="arc-tab-label">Boilerplate ({mech_slice_count})</span>'
+            f'<span class="arc-tab-label">Appendix ({mech_slice_count})</span>'
             f"</button>"
         )
 
@@ -3191,7 +3297,7 @@ def build_html_artifact(
                 f"{next_label}</button>"
             )
         elif mech_groups:
-            def_mech_lbl = f"Boilerplate ({mech_slice_count}) →"
+            def_mech_lbl = f"Appendix ({mech_slice_count}) →"
             next_btn = (
                 f'<button type="button" class="nav-btn" data-nav-dir="next" '
                 f'data-default-label="{def_mech_lbl}" data-goto-index="{total_main_steps + 1}">'
@@ -3265,7 +3371,7 @@ def build_html_artifact(
             f"""<section class="step-panel" id="step-mechanical" data-step-id="step-mechanical" data-panel-index="{mech_idx}" data-chapter-id="" data-area-ids="{esc(mech_areas_csv)}" aria-labelledby="heading-mechanical" hidden="until-found">
       <div class="step-card">
         <div class="outside-filter-banner" hidden>Showing boilerplate outside your active area filter.</div>
-        <p class="eyebrow">Appendix · Mechanical &amp; Boilerplate</p>
+        <p class="eyebrow">Appendix · Docs, Records &amp; Boilerplate</p>
         <h2 id="heading-mechanical" class="step-title">Low-Signal Changes ({mech_slice_count} items)</h2>
         <p class="lead-subtle">Tucked at the end so boilerplate never blocks core review, while keeping 100% of the PR diff inspectable.</p>
         {"".join(mech_blocks)}
@@ -3502,7 +3608,7 @@ def build_html_artifact(
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: var(--rail);
       color: var(--text);
-      line-height: 1.55;
+      line-height: 1.6;
       -webkit-font-smoothing: antialiased;
     }}
 
@@ -4234,27 +4340,32 @@ def build_html_artifact(
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 10px;
-      padding: 1.35rem 1.5rem;
+      padding: 1.5rem 1.75rem 1.6rem;
+    }}
+
+    @container (max-width: 560px) {{
+      .step-card {{ padding: 1.1rem 1rem 1.2rem; }}
     }}
 
     .eyebrow {{
-      margin: 0 0 0.3rem;
+      margin: 0 0 0.45rem;
       font-size: 0.77rem;
       color: var(--muted);
       font-weight: 560;
     }}
 
     .step-title {{
-      margin: 0 0 0.55rem;
+      margin: 0 0 0.85rem;
       font-size: 1.24rem;
       font-weight: 660;
       line-height: 1.3;
     }}
 
     .lead-text {{
-      max-width: 80ch;
-      margin: 0 0 0.95rem;
-      font-size: 0.95rem;
+      max-width: 62ch;
+      margin: 0 0 1.35rem;
+      font-size: 1rem;
+      line-height: 1.65;
     }}
 
     .lead-subtle {{
@@ -4265,7 +4376,8 @@ def build_html_artifact(
 
     /* Rotated Formatting Containers: Tables, Anchored Lists, Concept Chips */
     .table-wrap {{
-      margin: 0 0 1rem;
+      margin: 0 0 1.4rem;
+      max-width: 110ch;
       overflow-x: auto;
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -4274,11 +4386,12 @@ def build_html_artifact(
     .mod-table {{
       width: 100%;
       border-collapse: collapse;
-      font-size: 0.85rem;
+      font-size: 0.9rem;
+      line-height: 1.55;
     }}
 
     .mod-table th, .mod-table td {{
-      padding: 0.5rem 0.75rem;
+      padding: 0.6rem 0.85rem;
       text-align: left;
       border-bottom: 1px solid var(--border);
     }}
@@ -4307,12 +4420,14 @@ def build_html_artifact(
     .inline-jump:hover {{ text-decoration: underline; }}
 
     .anchored-list {{
-      margin: 0 0 1rem;
+      margin: 0 0 1.4rem;
       padding-left: 1.2rem;
+      max-width: 64ch;
       display: flex;
       flex-direction: column;
-      gap: 0.35rem;
-      font-size: 0.89rem;
+      gap: 0.75rem;
+      font-size: 0.95rem;
+      line-height: 1.65;
     }}
 
     .concepts-Primer-box {{
@@ -4895,12 +5010,14 @@ def build_html_artifact(
 
     /* Callouts */
     .callout {{
-      margin: 0 0 0.9rem;
-      padding: 0.6rem 0.85rem;
+      margin: 0 0 1.25rem;
+      padding: 0.75rem 1rem;
+      max-width: 72ch;
       border-left: 3px solid var(--warn-fg);
       background: var(--warn-bg);
       border-radius: 0 6px 6px 0;
-      font-size: 0.87rem;
+      font-size: 0.92rem;
+      line-height: 1.6;
     }}
 
     .callout-decision {{
@@ -4911,7 +5028,7 @@ def build_html_artifact(
     .compact-list {{ margin: 0.3rem 0 0; padding-left: 1.15rem; }}
 
     /* Timeline Diff Cards */
-    .hunk-stack {{ display: flex; flex-direction: column; gap: 0.85rem; }}
+    .hunk-stack {{ display: flex; flex-direction: column; gap: 1.1rem; margin-top: 0.4rem; }}
 
     .hunk-card {{
       border: 1px solid var(--border);
@@ -5543,7 +5660,7 @@ def build_html_artifact(
 
     <div class="canvas-wrap">
       <main id="steps-main" class="steps-stack">
-        {"".join(panels_html)}
+        {"".join(dedupe_concept_links(panel) for panel in panels_html)}
       </main>
 
       <footer class="foot-hint">
@@ -5767,7 +5884,7 @@ def build_html_artifact(
             }}
             if (!lbl) {{
               if (isMech) {{
-                lbl = "Boilerplate →";
+                lbl = "Appendix →";
               }} else {{
                 const h2 = panels[nextIdx].querySelector(".step-title");
                 lbl = `Next: Step ${{nextIdx}}${{h2 ? " · " + h2.textContent : ""}} →`;
@@ -6465,7 +6582,7 @@ def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> st
 
     mech_groups = (plan.get("mechanical") or {}).get("groups") or []
     if mech_groups:
-        lines.append(f"## Boilerplate ({stats['total_hunks']}/{stats['total_hunks']} hunks accounted)")
+        lines.append(f"## Appendix: docs, records & boilerplate ({stats['total_hunks']}/{stats['total_hunks']} hunks accounted)")
         for grp in mech_groups:
             lines.append(f"- **{grp['title']}:** {grp.get('reason') or 'Mechanical changes'}")
         lines.append("")

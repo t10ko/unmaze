@@ -620,10 +620,15 @@ class UnmazeTestSuite(unittest.TestCase):
         self.assertNotIn('class="flow-strip"', rendered)
         self.assertIn("Introduced in this PR", rendered)
         self.assertIn("Existing in repo", rendered)
-        self.assertIn(
-            '<button type="button" class="concept-link" data-concept="claimed-lease">its 60s timer ran out</button>',
-            rendered,
-        )
+        # Each concept is clickable only at its FIRST mention per step/overview panel; later mentions
+        # in the same panel read as plain text so steps don't turn every other phrase into a link.
+        self.assertIn("its 60s timer ran out", rendered)
+        panels = re.findall(r'<section class="step-panel".*?</section>', rendered, re.DOTALL)
+        self.assertGreater(len(panels), 5)
+        for panel in panels:
+            linked = re.findall(r'class="concept-link[^"]*" data-concept="([^"]+)"', panel)
+            self.assertEqual(len(linked), len(set(linked)), f"duplicate concept links in a panel: {linked}")
+        self.assertIn('data-concept="claimed-lease"', rendered.split('id="step-2"', 1)[1].split("</section>", 1)[0])
         self.assertNotIn("[[", rendered)
         self.assertNotIn("[[", md_out)
 
@@ -703,6 +708,35 @@ class UnmazeTestSuite(unittest.TestCase):
             )
             self.assertEqual(res_inc.returncode, 2)
             self.assertIn("missing its explanation in Sweep 2", res_inc.stderr)
+
+            # Sweep 2 linking a vague phrase ("the reply") -> rejected; dotted links must name the thing.
+            vague_patch = tmp_path / "vague.json"
+            vague_patch.write_text(
+                json.dumps(
+                    {
+                        "concepts": [
+                            {
+                                "id": "dedup-badge",
+                                "term": "200 deduplicated",
+                                "origin": "introduced",
+                                "file": "api/routes/webhooks.ts",
+                                "what_it_is": "Short HTTP 200 reply telling the sender we already saw this event.",
+                                "how_it_works": ["**Early return:** Sent when the event was already seen."],
+                            }
+                        ],
+                        "rewrites": {"overview.after_state": "Now we send [[dedup-badge|the reply]] right away."},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            res_vague = subprocess.run(
+                [sys.executable, str(SCRIPTS_DIR / "concept_sweep.py"), "apply", "--plan", str(plan_file), "--patch", str(vague_patch)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(res_vague.returncode, 2)
+            self.assertIn("links the vague phrase `the reply`", res_vague.stderr)
 
             # Sweep 2 with complete repo-grounded explanation + semantic link -> succeeds!
             good_patch = tmp_path / "good.json"
@@ -939,6 +973,62 @@ class UnmazeTestSuite(unittest.TestCase):
         )
         self.assertTrue(board_registry.PUSH_CMD_RE.search("cd x && git push --force-with-lease"))
         self.assertFalse(board_registry.PUSH_CMD_RE.search('git commit -m "push it"'))
+
+    def test_step_budget_rejects_over_split_reviews_with_concrete_hints(self) -> None:
+        manifest = self._build_sample_manifest()
+        budget, prod_lines = build_artifact.compute_step_budget(manifest)
+        self.assertEqual(budget, build_artifact.STEP_BUDGET_MIN)
+        self.assertLess(prod_lines, 150)
+        # Tests and lockfiles don't count toward the budget.
+        self.assertEqual(build_artifact.hunk_review_kind({"file_path": "a/b.test.ts", "category_hint": "test"}), "test")
+        self.assertEqual(build_artifact.hunk_review_kind({"file_path": "docs/plan.md", "category_hint": "core"}), "docs")
+        self.assertEqual(build_artifact.hunk_review_kind({"file_path": "docs/decisions.tsv", "category_hint": "core"}), "docs")
+        self.assertEqual(build_artifact.hunk_review_kind({"file_path": "src/app.ts", "category_hint": "core"}), "code")
+
+        # Split the sample into 6 steps (one over the budget of 5) -> rejected with merge hints.
+        over = copy.deepcopy(self.sample_plan)
+        step2 = next(st for st in over["steps"] if st["id"] == "step-2")
+        step2["hunk_ids"] = ["H007:1-20"]
+        extra = {
+            "id": "step-2b",
+            "layer": "core",
+            "title": "Rest of the claim check",
+            "explanation": "The rest of the claim check.",
+            "hunk_ids": ["H007:21-34,52"],
+        }
+        step2.pop("diff_highlights", None)
+        over["steps"].insert(2, extra)
+        over["chapters"][0]["step_ids"].append("step-2b")
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx:
+            build_artifact.validate_and_normalize_plan(manifest, over)
+        msg = str(ctx.exception)
+        self.assertIn("Step Budget Check FAILED — 6 steps", msg)
+        self.assertIn("(budget: 5;", msg)
+        self.assertIn("tests-only steps: step-5", msg)
+
+        # A big PR gets a bigger budget, capped at 12.
+        big = {"hunks": [{"file_path": "src/x.ts", "category_hint": "core", "additions": 5000, "deletions": 0}]}
+        self.assertEqual(build_artifact.compute_step_budget(big)[0], build_artifact.STEP_BUDGET_MAX)
+        mid = {"hunks": [{"file_path": "src/x.ts", "category_hint": "core", "additions": 600, "deletions": 0}]}
+        self.assertEqual(build_artifact.compute_step_budget(mid)[0], 7)
+
+    def test_docs_hint_appendix_label_and_spacing(self) -> None:
+        self.assertEqual(parse_diff.classify_file_hint("docs/analytics/plan.md"), "docs")
+        self.assertEqual(parse_diff.classify_file_hint("docs/decisions.tsv"), "docs")
+        self.assertEqual(parse_diff.classify_file_hint("README.md"), "docs")
+        self.assertEqual(parse_diff.classify_file_hint("src/routes/users.ts"), "wiring")
+
+        manifest = self._build_sample_manifest()
+        validated = build_artifact.validate_and_normalize_plan(manifest, copy.deepcopy(self.sample_plan))
+        rendered = build_artifact.build_html_artifact(manifest, validated, search_dirs=[REPO_ROOT / "examples"])
+        md_out = build_artifact.build_markdown_summary(manifest, validated)
+        self.assertIn('<span class="arc-tab-label">Appendix (', rendered)
+        self.assertIn("Appendix · Docs, Records &amp; Boilerplate", rendered)
+        self.assertNotIn(">Boilerplate (", rendered)
+        self.assertIn("## Appendix: docs, records & boilerplate", md_out)
+        # Readable line length and spacing for prose blocks.
+        self.assertRegex(rendered, r"\.anchored-list \{[^}]*max-width: 64ch;[^}]*gap: 0\.75rem;")
+        self.assertRegex(rendered, r"\.lead-text \{[^}]*max-width: 62ch;")
 
 
 if __name__ == "__main__":

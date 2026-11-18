@@ -35,6 +35,14 @@ BRACKET_CONCEPT_RE = re.compile(r"\[\[([^\]]+)\]\]")
 SLOT_PATH_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)(?:\[(\d+)\])?$")
 
 
+# "the report", "this key", "it": a determiner plus at most one word says nothing on its own,
+# so a dotted link on it is noise. Name the thing instead, or leave the phrase unlinked.
+VAGUE_LINK_PHRASE_RE = re.compile(
+    r"^(?:(?:the|this|that|these|those|its|it's|our|their|a|an)\s+\S+|it|they|them|this|that)$",
+    re.IGNORECASE,
+)
+
+
 def normalize_concept_id(raw: str) -> str:
     return re.sub(r"[^a-z0-9_-]+", "-", str(raw).strip().lower()).strip("-")
 
@@ -381,6 +389,12 @@ def cmd_apply(plan_path: Path, patch_path: Path) -> int:
                 errors.append(
                     f"Slot `{slot_key}` links unknown concept `[[{raw_ref}]]` "
                     f"(confirmed concept IDs: {', '.join(sorted(known_ids))})."
+                )
+            phrase = raw_ref.split("|", 1)[1].strip().strip("`") if "|" in raw_ref else ""
+            if phrase and VAGUE_LINK_PHRASE_RE.match(phrase):
+                errors.append(
+                    f"Slot `{slot_key}` links the vague phrase `{phrase}` to `{ref_id}`. Link a phrase that "
+                    f"names the thing (e.g. `the Impact Report tab`, `frees the lock`) or leave it as plain text."
                 )
 
     if errors:
