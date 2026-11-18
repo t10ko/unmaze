@@ -46,6 +46,40 @@ VALID_CALLOUT_KINDS = {
 
 VALID_NODE_STATUS = {"unchanged", "modified", "added", "removed"}
 VALID_ANNOTATION_KINDS = {"circle", "arrow", "box"}
+VALID_VISUAL_ROLES = {"before", "after"}
+
+# Overview shows the whole feature in one hero screenshot; step-specific crops live in their steps.
+MAX_OVERVIEW_VISUALS = 3
+# Any visuals block with this many screenshots (outside a before/after pair) renders as a gallery.
+GALLERY_MIN_VISUALS = 3
+
+# "Ship facts": every review states each operational fact explicitly, including "none".
+SHIP_FACT_FIELDS: list[tuple[str, str]] = [
+    ("schema_migrations", "Schema migrations"),
+    ("data_backfills", "Data backfills or one-off scripts"),
+    ("config_and_secrets", "Config, env vars or secrets"),
+    ("feature_flags", "Feature flags"),
+    ("dependencies", "New or upgraded dependencies"),
+    ("api_contracts", "API, event or contract changes"),
+    ("deploy_order", "Deploy order or rollout steps"),
+]
+SHIP_FACT_NONE_VALUES = {"none", "no", "n/a", "na", "nothing", "-", "—"}
+SHIP_FACT_UNKNOWN_VALUES = {"unknown", "not checked", "unchecked", "unsure"}
+
+VALID_LINK_KINDS = {
+    "ticket": "Ticket",
+    "design": "Design",
+    "spec": "Spec",
+    "docs": "Docs",
+    "other": "Link",
+}
+MAX_OVERVIEW_LINKS = 6
+
+# Top-level folders that hold several deployable units (`apps/analytics`, `packages/ui`, ...).
+MONOREPO_CONTAINER_DIRS = {
+    "apps", "packages", "services", "libs", "modules", "crates", "plugins", "projects", "cmd",
+}
+MAX_FOOTPRINT_ROWS = 8
 
 HUNK_SPEC_RE = re.compile(r"^(H\d{3,})(?::([\d,\-\s]+))?$")
 
@@ -987,77 +1021,295 @@ def render_annotations_svg(annotations: list[dict[str, Any]], width: int, height
     )
 
 
+def _visual_tab_label(vis: dict[str, Any], position: int) -> str:
+    explicit = str(vis.get("label") or "").strip()
+    if explicit:
+        return explicit
+    for ann in vis.get("annotations") or []:
+        if isinstance(ann, dict) and str(ann.get("label") or "").strip():
+            return str(ann["label"]).strip()
+    return f"Screen {position}"
+
+
+def _render_visual_card_html(
+    vis: dict[str, Any],
+    *,
+    search_dirs: list[Path],
+    concept_lookup: dict[str, str],
+    eager: bool,
+    extra_attrs: str = "",
+) -> tuple[str, str]:
+    """Render one screenshot card. Returns `(html, kind)` with kind `figure`, `figma`, or `skip`."""
+    caption = str(vis.get("caption") or "").strip()
+    figma_url = safe_http_url(vis.get("figma_url"))
+    source_label = str(vis.get("source_label") or ("Figma Reference" if figma_url else "UI Reference")).strip()
+    annotations = [a for a in (vis.get("annotations") or []) if isinstance(a, dict)]
+    role = str(vis.get("role") or "").strip().lower()
+    role_badge = (
+        f'<span class="vis-role-badge vis-role-{esc(role)}">{esc(role.capitalize())}</span>'
+        if role in VALID_VISUAL_ROLES
+        else ""
+    )
+
+    resolved_src, w, h = resolve_visual_asset(vis, search_dirs=search_dirs)
+    figma_link_html = (
+        f'<a class="vis-ext-link" href="{esc(figma_url)}" target="_blank" rel="noopener noreferrer" '
+        f'aria-label="Open in Figma: {esc(source_label)}">'
+        f'Open in Figma <span aria-hidden="true">↗</span></a>'
+        if figma_url
+        else ""
+    )
+
+    if not resolved_src:
+        if figma_url:
+            return (
+                f'<div class="figma-only-card">'
+                f'<div><span class="vis-badge">{esc(source_label)}</span> '
+                f'<span>{fmt_prose(caption or "Design specification for this step", concept_lookup)}</span></div>'
+                f"{figma_link_html}</div>",
+                "figma",
+            )
+        return "", "skip"
+
+    ann_labels = [str(a.get("label")).strip() for a in annotations if a.get("label")]
+    if ann_labels:
+        alt_text = f"{source_label} — red marks on: {', '.join(ann_labels)}"
+    elif caption:
+        alt_text = source_label
+    else:
+        alt_text = f"{source_label} screenshot"
+
+    overlay_svg = render_annotations_svg(annotations, w, h)
+    is_remote = resolved_src.startswith(("http://", "https://"))
+    loading_attr = (
+        ' fetchpriority="high"'
+        if (is_remote and eager)
+        else (' loading="lazy"' if is_remote else "")
+    )
+    aspect = max(0.1, float(w) / max(1.0, float(h)))
+
+    return (
+        f"""<figure class="visual-card"{extra_attrs}>
+  <div class="visual-head">
+    <span class="vis-head-left">{role_badge}<span class="vis-badge">{esc(source_label)}</span></span>
+    <div class="visual-actions">
+      {figma_link_html}
+      <button type="button" class="vis-zoom-btn" aria-label="Zoom {esc(source_label)} screenshot">Zoom</button>
+    </div>
+  </div>
+  <div class="visual-stage-wrap">
+    <div class="visual-stage" style="--vis-ar: {aspect:.4f}">
+      <img src="{esc(resolved_src)}" alt="{esc(alt_text)}" width="{w}" height="{h}"{loading_attr}>
+      {overlay_svg}
+    </div>
+  </div>
+  {f'<figcaption class="visual-caption">{fmt_prose(caption, concept_lookup)}</figcaption>' if caption else ''}
+</figure>""",
+        "figure",
+    )
+
+
 def render_visuals_block_html(
     visuals: list[dict[str, Any]] | None,
     *,
     search_dirs: list[Path],
     concept_lookup: dict[str, str],
     eager: bool = False,
+    block_id: str = "vis",
 ) -> str:
+    """Render a visuals block, grouping smartly.
+
+    - A `role: "before"` + `role: "after"` pair renders side by side (never inside a gallery).
+    - 3+ remaining screenshots render as a gallery: one large image plus a captioned thumbnail strip.
+    - 1-2 remaining screenshots stack as before.
+    """
     if not visuals:
         return ""
-    cards: list[str] = []
-    for vis in visuals:
-        if not isinstance(vis, dict):
-            continue
-        caption = str(vis.get("caption") or "").strip()
-        figma_url = safe_http_url(vis.get("figma_url"))
-        source_label = str(vis.get("source_label") or ("Figma Reference" if figma_url else "UI Reference")).strip()
-        annotations = [a for a in (vis.get("annotations") or []) if isinstance(a, dict)]
+    items = [v for v in visuals if isinstance(v, dict)]
+    before_vis = next((v for v in items if str(v.get("role") or "").lower() == "before"), None)
+    after_vis = next((v for v in items if str(v.get("role") or "").lower() == "after"), None)
+    pair = [before_vis, after_vis] if (before_vis is not None and after_vis is not None) else []
 
-        resolved_src, w, h = resolve_visual_asset(vis, search_dirs=search_dirs)
-        figma_link_html = (
-            f'<a class="vis-ext-link" href="{esc(figma_url)}" target="_blank" rel="noopener noreferrer" '
-            f'aria-label="Open in Figma: {esc(source_label)}">'
-            f'Open in Figma <span aria-hidden="true">↗</span></a>'
-            if figma_url
+    parts: list[str] = []
+    if pair:
+        pair_cards = [
+            _render_visual_card_html(v, search_dirs=search_dirs, concept_lookup=concept_lookup, eager=eager)[0]
+            for v in pair
+        ]
+        parts.append(f'<div class="vis-compare">{"".join(c for c in pair_cards if c)}</div>')
+
+    rest = [v for v in items if not any(v is p for p in pair)]
+    attrs_marker = "\x00gallery-attrs\x00"
+    figures: list[tuple[dict[str, Any], str]] = []
+    extras: list[str] = []
+    safe_block = re.sub(r"[^a-zA-Z0-9_-]+", "-", block_id).strip("-") or "vis"
+    for vis in rest:
+        html_card, kind = _render_visual_card_html(
+            vis, search_dirs=search_dirs, concept_lookup=concept_lookup, eager=eager, extra_attrs=attrs_marker
+        )
+        if kind == "figure":
+            figures.append((vis, html_card))
+        elif html_card:
+            extras.append(html_card)
+
+    if len(figures) >= GALLERY_MIN_VISUALS:
+        total = len(figures)
+        tabs = []
+        slides = []
+        for idx, (vis, card) in enumerate(figures):
+            slide_id = f"gal-{safe_block}-{idx}"
+            slides.append(
+                card.replace(
+                    attrs_marker,
+                    f' id="{slide_id}" role="tabpanel" aria-labelledby="{slide_id}-tab"'
+                    f'{" hidden" if idx else ""}',
+                    1,
+                )
+            )
+            selected = idx == 0
+            tabs.append(
+                f'<button type="button" role="tab" class="vis-gallery-tab" id="{slide_id}-tab" '
+                f'aria-controls="{slide_id}" aria-selected="{"true" if selected else "false"}" '
+                f'tabindex="{"0" if selected else "-1"}" data-gallery-index="{idx}">'
+                f'<img class="vis-thumb" alt="" data-thumb-for="{slide_id}">'
+                f'<span class="vis-tab-label"><span class="vis-tab-num">{idx + 1}</span>'
+                f"{esc(_visual_tab_label(vis, idx + 1))}</span>"
+                f"</button>"
+            )
+        parts.append(
+            f'<div class="vis-gallery" data-active="0">'
+            f'<div class="vis-gallery-bar">'
+            f'<div class="vis-gallery-tabs" role="tablist" aria-label="Screenshots ({total})">{"".join(tabs)}</div>'
+            f'<div class="vis-gallery-nav">'
+            f'<button type="button" class="vis-gallery-step" data-gallery-step="-1" aria-label="Previous screenshot">‹</button>'
+            f'<span class="vis-gallery-count" aria-live="polite">1 / {total}</span>'
+            f'<button type="button" class="vis-gallery-step" data-gallery-step="1" aria-label="Next screenshot">›</button>'
+            f"</div></div>"
+            f'<div class="vis-gallery-slides">{"".join(slides)}</div>'
+            f"</div>"
+        )
+    else:
+        extras = [card.replace(attrs_marker, "", 1) for _, card in figures] + extras
+
+    if extras:
+        parts.append(f'<div class="visuals-stack">{"".join(extras)}</div>')
+    return f'<div class="visuals-block">{"".join(parts)}</div>' if parts else ""
+
+
+# ---------------------------------------------------------------------------
+# Overview: Source Links, "This PR" Block (Footprint + Ship Facts)
+# ---------------------------------------------------------------------------
+
+def render_source_links_html(links: list[dict[str, str]]) -> str:
+    if not links:
+        return ""
+    pills = "".join(
+        f'<a class="source-link" href="{esc(lk["url"])}" target="_blank" rel="noopener noreferrer">'
+        f'<span class="source-kind">{esc(VALID_LINK_KINDS.get(lk["kind"], "Link"))}</span>'
+        f'<span class="source-label">{esc(lk["label"])}</span>'
+        f'<span class="source-arrow" aria-hidden="true">↗</span></a>'
+        for lk in links
+    )
+    return f'<nav class="source-links" aria-label="Ticket, design and spec links">{pills}</nav>'
+
+
+def _fmt_count(n: int) -> str:
+    return f"{n:,}"
+
+
+def render_footprint_html(rows: list[dict[str, Any]], concept_lookup: dict[str, str]) -> str:
+    if not rows:
+        return ""
+    shown = rows[:MAX_FOOTPRINT_ROWS]
+    hidden = rows[MAX_FOOTPRINT_ROWS:]
+    body: list[str] = []
+    for row in shown:
+        n_files = len(row["files"])
+        label_html = f'<span class="fp-label">{esc(row["label"])}</span>' if row["label"] else ""
+        if row["change"]:
+            change_html = f"<span>{fmt_prose(row['change'], concept_lookup)}</span>"
+        else:
+            names = [p.rsplit("/", 1)[-1] for p in row["files"]]
+            more = f" +{len(names) - 3} more" if len(names) > 3 else ""
+            change_html = f'<span class="fp-files">{esc(", ".join(names[:3]))}{esc(more)}</span>'
+        entry_html = (
+            '<span class="fp-entries">'
+            + "".join(f'<code class="inline-code">{esc(e)}</code>' for e in row["entry_points"])
+            + "</span>"
+            if row["entry_points"]
             else ""
         )
-
-        if not resolved_src:
-            if figma_url:
-                cards.append(
-                    f'<div class="figma-only-card">'
-                    f'<div><span class="vis-badge">{esc(source_label)}</span> '
-                    f'<span>{fmt_prose(caption or "Design specification for this step", concept_lookup)}</span></div>'
-                    f"{figma_link_html}</div>"
-                )
-            continue
-
-        ann_labels = [str(a.get("label")).strip() for a in annotations if a.get("label")]
-        if ann_labels:
-            alt_text = f"{source_label} — red marks on: {', '.join(ann_labels)}"
-        elif caption:
-            alt_text = source_label
-        else:
-            alt_text = f"{source_label} screenshot"
-
-        overlay_svg = render_annotations_svg(annotations, w, h)
-        is_remote = resolved_src.startswith(("http://", "https://"))
-        loading_attr = (
-            ' fetchpriority="high"'
-            if (is_remote and eager)
-            else (' loading="lazy"' if is_remote else "")
+        body.append(
+            f"<tr>"
+            f'<td class="fp-part">{label_html}<code class="fp-path">{esc(row["path"])}</code></td>'
+            f'<td class="fp-change">{change_html}{entry_html}</td>'
+            f'<td class="fp-size"><span>{n_files} file{"s" if n_files != 1 else ""}</span>'
+            f'<span><span class="stat-add">+{_fmt_count(row["additions"])}</span> '
+            f'<span class="stat-del">−{_fmt_count(row["deletions"])}</span></span></td>'
+            f"</tr>"
         )
-
-        cards.append(
-            f"""<figure class="visual-card">
-  <div class="visual-head">
-    <span class="vis-badge">{esc(source_label)}</span>
-    <div class="visual-actions">
-      {figma_link_html}
-      <button type="button" class="vis-zoom-btn" aria-label="Zoom {esc(source_label)} screenshot">Zoom</button>
-    </div>
-  </div>
-  <div class="visual-stage">
-    <img src="{esc(resolved_src)}" alt="{esc(alt_text)}" width="{w}" height="{h}"{loading_attr}>
-    {overlay_svg}
-  </div>
-  {f'<figcaption class="visual-caption">{fmt_prose(caption, concept_lookup)}</figcaption>' if caption else ''}
-</figure>"""
+    if hidden:
+        hidden_files = sum(len(r["files"]) for r in hidden)
+        body.append(
+            f'<tr><td colspan="3" class="fp-more">…and {len(hidden)} more parts '
+            f"({hidden_files} file{'s' if hidden_files != 1 else ''})</td></tr>"
         )
+    return (
+        f'<div class="this-pr-section">'
+        f'<h3 class="block-heading">What this PR touches</h3>'
+        f'<div class="table-wrap"><table class="mod-table footprint-table">'
+        f'<thead><tr><th scope="col">Part</th><th scope="col">What changed</th><th scope="col">Size</th></tr></thead>'
+        f'<tbody>{"".join(body)}</tbody></table></div></div>'
+    )
 
-    return f'<div class="visuals-stack">{"".join(cards)}</div>' if cards else ""
+
+def render_ship_facts_html(facts: list[dict[str, str]], concept_lookup: dict[str, str]) -> str:
+    if not facts:
+        return ""
+    present = [f for f in facts if f["status"] == "present"]
+    unknown = [f for f in facts if f["status"] == "unknown"]
+    none_facts = [f for f in facts if f["status"] == "none"]
+    items: list[str] = []
+    for fact in present:
+        items.append(
+            f'<li class="ship-item is-present"><span class="ship-badge">Yes</span>'
+            f'<span class="ship-body"><span class="ship-label">{esc(fact["label"])}</span>'
+            f'<span class="ship-text">{fmt_prose(fact["value"], concept_lookup)}</span></span></li>'
+        )
+    for fact in unknown:
+        items.append(
+            f'<li class="ship-item is-unknown"><span class="ship-badge">Not checked</span>'
+            f'<span class="ship-body"><span class="ship-label">{esc(fact["label"])}</span>'
+            f'<span class="ship-text">Nobody verified this yet, so check it before merging.</span></span></li>'
+        )
+    list_html = f'<ul class="ship-list">{"".join(items)}</ul>' if items else ""
+    none_html = (
+        f'<p class="ship-none"><span class="ship-badge">None</span>'
+        f'<span>{esc(" · ".join(f["label"] for f in none_facts))}</span></p>'
+        if none_facts
+        else ""
+    )
+    return (
+        f'<div class="this-pr-section">'
+        f'<h3 class="block-heading">Ship facts</h3>'
+        f"{list_html}{none_html}</div>"
+    )
+
+
+def render_this_pr_block_html(
+    overview: dict[str, Any], footprint_rows: list[dict[str, Any]], concept_lookup: dict[str, str]
+) -> str:
+    this_pr_part = str(overview.get("this_pr_part") or "").strip()
+    badge = "What we built in this PR" if this_pr_part else "What this PR changes"
+    lead_html = f'<p class="this-pr-lead">{fmt_prose(this_pr_part, concept_lookup)}</p>' if this_pr_part else ""
+    return (
+        f'<div class="this-pr-block" role="region" aria-label="{esc(badge)}">'
+        f'<span class="pr-part-badge">{esc(badge)}</span>'
+        f"{lead_html}"
+        f"{render_footprint_html(footprint_rows, concept_lookup)}"
+        f"{render_ship_facts_html(overview.get('_ship_facts') or [], concept_lookup)}"
+        f"</div>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1091,6 +1343,13 @@ def _validate_visuals_list(
         has_figma = bool(str(vis.get("figma_url") or "").strip())
         if not has_src and not has_figma:
             errors.append(f"`{owner_name}.visuals[{v_idx}]` must specify `src` and/or `figma_url`.")
+        role = vis.get("role")
+        if role is not None and str(role).strip().lower() not in VALID_VISUAL_ROLES:
+            errors.append(
+                f"`{owner_name}.visuals[{v_idx}].role` must be one of: {', '.join(sorted(VALID_VISUAL_ROLES))}."
+            )
+        if vis.get("label") is not None and not isinstance(vis.get("label"), str):
+            errors.append(f"`{owner_name}.visuals[{v_idx}].label` must be a short string.")
         src_ok = True
         if has_src and search_dirs is not None:
             resolved_src, _, _ = resolve_visual_asset(vis, search_dirs=search_dirs)
@@ -1138,6 +1397,202 @@ def _validate_visuals_list(
     return annotated_count
 
 
+def classify_ship_fact(value: str) -> str:
+    """Return `none`, `unknown`, or `present` for one ship-fact answer."""
+    norm = value.strip().rstrip(".").strip().lower()
+    if norm in SHIP_FACT_NONE_VALUES:
+        return "none"
+    if norm in SHIP_FACT_UNKNOWN_VALUES:
+        return "unknown"
+    return "present"
+
+
+def _validate_ship_facts(raw: Any, errors: list[str]) -> list[dict[str, str]]:
+    """Every review must answer each ship fact explicitly (`"none"` is a valid, useful answer)."""
+    example = ", ".join(f'"{key}": "none"' for key, _ in SHIP_FACT_FIELDS[:2])
+    if not isinstance(raw, dict):
+        errors.append(
+            "Ship Facts Check FAILED — `overview.ship_facts` is required so reviewers see what ships besides code.\n"
+            f"  Answer every key with a short sentence, or `\"none\"` / `\"unknown\"`: "
+            f"{', '.join(key for key, _ in SHIP_FACT_FIELDS)}.\n"
+            f"  Example: {{{example}, ...}}"
+        )
+        return []
+    known = {key for key, _ in SHIP_FACT_FIELDS}
+    for key in raw:
+        if key not in known:
+            errors.append(
+                f"`overview.ship_facts.{key}` is not a known ship fact. "
+                f"Use only: {', '.join(key for key, _ in SHIP_FACT_FIELDS)}."
+            )
+    facts: list[dict[str, str]] = []
+    missing: list[str] = []
+    for key, label in SHIP_FACT_FIELDS:
+        value = raw.get(key)
+        if not isinstance(value, str) or not value.strip():
+            missing.append(key)
+            continue
+        facts.append({"key": key, "label": label, "value": value.strip(), "status": classify_ship_fact(value)})
+    if missing:
+        errors.append(
+            f"Ship Facts Check FAILED — `overview.ship_facts` is missing {', '.join(f'`{m}`' for m in missing)}. "
+            f"Answer each one with a short sentence, or `\"none\"` when the PR has none (say it out loud), "
+            f"or `\"unknown\"` when you couldn't check."
+        )
+    return facts
+
+
+def _validate_overview_links(raw: Any, errors: list[str]) -> list[dict[str, str]]:
+    """Validate the ticket / design / spec links row shown under the Overview title."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        errors.append("`overview.links` must be an array of `{kind, label, url}` objects.")
+        return []
+    if len(raw) > MAX_OVERVIEW_LINKS:
+        errors.append(
+            f"`overview.links` has {len(raw)} links; keep at most {MAX_OVERVIEW_LINKS} "
+            f"(the main ticket, design file and spec matter most)."
+        )
+    links: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for l_idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            errors.append(f"`overview.links[{l_idx}]` must be an object.")
+            continue
+        kind = str(item.get("kind") or "other").strip().lower()
+        if kind not in VALID_LINK_KINDS:
+            errors.append(
+                f"`overview.links[{l_idx}].kind` must be one of: {', '.join(VALID_LINK_KINDS)}."
+            )
+            continue
+        url = safe_http_url(item.get("url"))
+        if not url:
+            errors.append(f"`overview.links[{l_idx}].url` must be an absolute http(s) URL.")
+            continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        label = str(item.get("label") or "").strip() or VALID_LINK_KINDS[kind]
+        links.append({"kind": kind, "label": label, "url": url})
+    return links
+
+
+def collect_overview_links(plan: dict[str, Any]) -> list[dict[str, str]]:
+    """Declared links plus any Figma file a screenshot points at (when no design link covers it)."""
+    overview = plan.get("overview") or {}
+    links = list(overview.get("_links") or [])
+    seen = {lk["url"] for lk in links}
+    design_count = sum(1 for lk in links if lk["kind"] == "design")
+    visual_lists = [overview.get("visuals") or []] + [st.get("visuals") or [] for st in plan.get("steps") or []]
+    for visuals in visual_lists:
+        for vis in visuals:
+            if not isinstance(vis, dict):
+                continue
+            figma_url = safe_http_url(vis.get("figma_url"))
+            if not figma_url or figma_url in seen or design_count >= 2:
+                continue
+            seen.add(figma_url)
+            design_count += 1
+            links.append({"kind": "design", "label": "Figma", "url": figma_url})
+    return links
+
+
+def detect_deployable_unit(path: str) -> str:
+    """Best-effort deployable unit for a file path: `apps/analytics`, `docs`, or `(repo root)`."""
+    parts = [p for p in path.split("/") if p]
+    if len(parts) <= 1:
+        return "(repo root)"
+    if parts[0] in MONOREPO_CONTAINER_DIRS and len(parts) > 2:
+        return f"{parts[0]}/{parts[1]}"
+    return parts[0]
+
+
+def _path_under(path: str, prefix: str) -> bool:
+    clean = prefix.strip().strip("/")
+    return path == clean or path.startswith(clean + "/")
+
+
+def _validate_footprint_decl(raw: Any, manifest: dict[str, Any], errors: list[str]) -> list[dict[str, Any]]:
+    """Optional `overview.footprint` notes: `[{path, label?, change, entry_points?}]`, each matching files."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        errors.append("`overview.footprint` must be an array of `{path, label, change, entry_points}` objects.")
+        return []
+    file_paths = [f["path"] for f in manifest.get("files", [])]
+    decls: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for f_idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            errors.append(f"`overview.footprint[{f_idx}]` must be an object.")
+            continue
+        prefix = str(item.get("path") or "").strip().strip("/")
+        if not prefix:
+            errors.append(f"`overview.footprint[{f_idx}].path` must name a folder or file the PR touches.")
+            continue
+        if prefix in seen_paths:
+            errors.append(f"`overview.footprint` lists `{prefix}` twice.")
+            continue
+        seen_paths.add(prefix)
+        if not any(_path_under(fp, prefix) for fp in file_paths):
+            errors.append(
+                f"`overview.footprint[{f_idx}].path` (`{prefix}`) matches zero changed files. "
+                f"Use a folder prefix such as `{detect_deployable_unit(file_paths[0]) if file_paths else 'src'}`."
+            )
+            continue
+        change = str(item.get("change") or "").strip()
+        if not change:
+            errors.append(f"`overview.footprint[{f_idx}].change` must say in one short sentence what changed there.")
+        entry_points = item.get("entry_points") or []
+        if not isinstance(entry_points, list) or not all(isinstance(e, str) for e in entry_points):
+            errors.append(f"`overview.footprint[{f_idx}].entry_points` must be an array of strings.")
+            entry_points = []
+        decls.append(
+            {
+                "path": prefix,
+                "label": str(item.get("label") or "").strip(),
+                "change": change,
+                "entry_points": [e.strip() for e in entry_points if e.strip()][:5],
+            }
+        )
+    return decls
+
+
+def build_change_footprint(manifest: dict[str, Any], plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Group every changed file into a deployable unit (declared prefixes first, then auto-detected)."""
+    decls: list[dict[str, Any]] = list((plan.get("overview") or {}).get("_footprint_decl") or [])
+    rows: dict[str, dict[str, Any]] = {}
+    for decl in decls:
+        rows[decl["path"]] = {**decl, "declared": True, "files": [], "additions": 0, "deletions": 0}
+    for f in manifest.get("files", []):
+        path = f["path"]
+        matches = [d["path"] for d in decls if _path_under(path, d["path"])]
+        key = max(matches, key=len) if matches else detect_deployable_unit(path)
+        row = rows.setdefault(
+            key,
+            {
+                "path": key,
+                "label": "",
+                "change": "",
+                "entry_points": [],
+                "declared": False,
+                "files": [],
+                "additions": 0,
+                "deletions": 0,
+            },
+        )
+        row["files"].append(path)
+        row["additions"] += int(f.get("additions") or 0)
+        row["deletions"] += int(f.get("deletions") or 0)
+    declared_rows = [rows[d["path"]] for d in decls]
+    auto_rows = sorted(
+        (r for r in rows.values() if not r["declared"]),
+        key=lambda r: (-(r["additions"] + r["deletions"]), r["path"]),
+    )
+    return declared_rows + auto_rows
+
+
 def validate_and_normalize_plan(
     manifest: dict[str, Any],
     plan: dict[str, Any],
@@ -1177,6 +1632,17 @@ def validate_and_normalize_plan(
     overview["this_pr_part"] = (
         str(this_pr_part_raw).strip() if isinstance(this_pr_part_raw, str) else ""
     )
+    overview["_links"] = _validate_overview_links(overview.get("links"), errors)
+    overview["_ship_facts"] = _validate_ship_facts(overview.get("ship_facts"), errors)
+    overview["_footprint_decl"] = _validate_footprint_decl(overview.get("footprint"), manifest, errors)
+    ov_visuals = overview.get("visuals")
+    if isinstance(ov_visuals, list) and len(ov_visuals) > MAX_OVERVIEW_VISUALS:
+        errors.append(
+            f"Overview Focus Check FAILED — `overview.visuals` has {len(ov_visuals)} screenshots "
+            f"(max {MAX_OVERVIEW_VISUALS}). Keep 1 hero screenshot of the whole feature with red marks on the "
+            f"parts this PR feeds, and move step-specific crops into the steps that build them "
+            f"(never repeat a screenshot a step already shows)."
+        )
     total_annotated_visuals = _validate_visuals_list(
         overview.get("visuals"), "overview", errors, search_dirs=search_dirs
     )
@@ -2549,15 +3015,11 @@ def build_html_artifact(
         search_dirs=asset_dirs,
         concept_lookup=concept_lookup,
         eager=True,
+        block_id="overview",
     )
-    this_pr_part = str(overview.get("this_pr_part") or "").strip()
-    this_pr_part_html = (
-        f'<div class="pr-part-card">'
-        f'<span class="pr-part-badge">What we built in this PR</span>'
-        f"<p>{fmt_prose(this_pr_part, concept_lookup)}</p>"
-        f"</div>"
-        if this_pr_part
-        else ""
+    source_links_html = render_source_links_html(collect_overview_links(plan))
+    this_pr_block_html = render_this_pr_block_html(
+        overview, build_change_footprint(manifest, plan), concept_lookup
     )
 
     concepts_bar_html = ""
@@ -2604,10 +3066,11 @@ def build_html_artifact(
       <div class="step-card">
         <p class="eyebrow">Overview · {stats['total_files']} files (+{stats['total_additions']} / −{stats['total_deletions']})</p>
         <h2 id="heading-overview" class="step-title">The Big Picture</h2>
+        {source_links_html}
         <p class="lead-text">{fmt_prose(overview['whole_task'], concept_lookup)}</p>
         {global_ctx_p}
+        {this_pr_block_html}
         {overview_visuals_html}
-        {this_pr_part_html}
         <div class="before-after">
           <div class="ba-item">
             <span class="ba-label">Before</span>
@@ -2657,6 +3120,7 @@ def build_html_artifact(
             search_dirs=asset_dirs,
             concept_lookup=concept_lookup,
             eager=False,
+            block_id=sid,
         )
 
         callouts_html: list[str] = []
@@ -3933,17 +4397,152 @@ def build_html_artifact(
       margin-bottom: 0.9rem;
     }}
 
-    .pr-part-card {{
+    /* Source links row (ticket, design, spec) */
+    .source-links {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
       margin: 0 0 0.9rem;
-      padding: 0.72rem 0.9rem;
-      border-radius: 8px;
-      background: var(--accent-soft);
-      border: 1px solid var(--border);
-      border-inline-start: 3px solid var(--accent);
-      font-size: 0.89rem;
     }}
 
-    .pr-part-card p {{ margin: 0.22rem 0 0; }}
+    .source-link {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.24rem 0.62rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.8rem;
+      text-decoration: none;
+    }}
+
+    .source-link:hover {{ border-color: var(--accent); color: var(--accent); }}
+
+    .source-kind {{
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }}
+
+    .source-arrow {{ color: var(--accent); }}
+
+    /* "This PR" block: what this PR adds, what it touches, what ships with it */
+    .this-pr-block {{
+      display: flex;
+      flex-direction: column;
+      gap: 1.1rem;
+      margin: 0 0 1.4rem;
+      padding: 1rem 1.15rem 1.15rem;
+      border-radius: 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-inline-start: 3px solid var(--accent);
+    }}
+
+    .this-pr-lead {{
+      margin: -0.55rem 0 0;
+      max-width: 80ch;
+      font-size: 0.95rem;
+      line-height: 1.6;
+    }}
+
+    .this-pr-section {{
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }}
+
+    .this-pr-section .table-wrap {{ margin: 0; }}
+
+    .block-heading {{
+      margin: 0;
+      font-size: 0.86rem;
+      font-weight: 680;
+      color: var(--text);
+    }}
+
+    .footprint-table td {{ vertical-align: top; line-height: 1.5; }}
+    .fp-part {{ white-space: nowrap; }}
+    .fp-label {{ display: block; font-weight: 620; }}
+    .fp-path {{ font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }}
+    .fp-files {{ color: var(--muted); }}
+    .fp-entries {{ display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.35rem; }}
+    .fp-size {{
+      white-space: nowrap;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 0.76rem;
+      color: var(--muted);
+    }}
+    .fp-size > span {{ display: block; }}
+    .fp-more {{ color: var(--muted); font-style: italic; }}
+
+    /* Narrow cards: each footprint row becomes a small card (part + size, then what changed). */
+    @container (max-width: 560px) {{
+      .footprint-table thead {{ display: none; }}
+      .footprint-table tr {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        border-bottom: 1px solid var(--border);
+      }}
+      .footprint-table tr:last-child {{ border-bottom: 0; }}
+      .footprint-table td {{ border-bottom: 0; }}
+      .footprint-table .fp-part {{ white-space: normal; grid-column: 1; grid-row: 1; }}
+      .footprint-table .fp-size {{ grid-column: 2; grid-row: 1; text-align: right; }}
+      .footprint-table .fp-change {{ grid-column: 1 / -1; padding-top: 0; }}
+      .footprint-table .fp-more {{ grid-column: 1 / -1; }}
+    }}
+
+    .ship-list {{
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+    }}
+
+    .ship-item {{
+      display: flex;
+      align-items: flex-start;
+      gap: 0.65rem;
+      font-size: 0.89rem;
+      line-height: 1.55;
+    }}
+
+    .ship-body {{ display: flex; flex-direction: column; gap: 0.1rem; max-width: 85ch; }}
+    .ship-label {{ font-weight: 650; }}
+
+    .ship-badge {{
+      flex-shrink: 0;
+      min-inline-size: 3.2rem;
+      text-align: center;
+      padding: 0.08rem 0.45rem;
+      border-radius: 999px;
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      margin-top: 0.12rem;
+    }}
+
+    .ship-item.is-present .ship-badge {{ background: var(--accent-soft); color: var(--accent); }}
+    .ship-item.is-unknown .ship-badge {{ background: var(--warn-bg); color: var(--warn-fg); }}
+
+    .ship-none {{
+      display: flex;
+      align-items: flex-start;
+      gap: 0.65rem;
+      margin: 0;
+      font-size: 0.84rem;
+      color: var(--muted);
+      line-height: 1.55;
+    }}
+
+    .ship-none .ship-badge {{ background: var(--subtle); color: var(--muted); border: 1px solid var(--border); }}
 
     .pr-part-badge {{
       display: inline-block;
@@ -4026,8 +4625,148 @@ def build_html_artifact(
       border-color: var(--accent);
     }}
 
-    .visual-stage {{ position: relative; line-height: 0; background: var(--surface); }}
+    /* Screenshots never grow taller than ~70% of the window; Zoom shows the full size. */
+    .visual-stage-wrap {{ background: var(--subtle); }}
+    .visual-stage {{
+      position: relative;
+      line-height: 0;
+      background: var(--surface);
+      inline-size: 100%;
+      max-inline-size: calc(70vh * var(--vis-ar, 1.6));
+      margin-inline: auto;
+    }}
     .visual-stage img {{ display: block; inline-size: 100%; block-size: auto; }}
+
+    .vis-head-left {{ display: inline-flex; align-items: center; gap: 0.45rem; min-width: 0; }}
+    .vis-role-badge {{
+      font-size: 0.66rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0.05rem 0.4rem;
+      border-radius: 4px;
+    }}
+    .vis-role-before {{ background: var(--del-bg); color: var(--del-fg); }}
+    .vis-role-after {{ background: var(--add-bg); color: var(--add-fg); }}
+
+    .visuals-block {{ display: flex; flex-direction: column; gap: 0.85rem; margin: 0 0 1.25rem; }}
+    .visuals-block > .visuals-stack {{ margin: 0; }}
+
+    /* Before/after pair side by side */
+    .vis-compare {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 0.75rem;
+      align-items: start;
+    }}
+
+    /* Gallery: one large screenshot + captioned thumbnail strip (3+ screenshots in one block) */
+    .vis-gallery {{
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--subtle);
+      overflow: hidden;
+    }}
+
+    .vis-gallery-bar {{
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.5rem 0.6rem;
+      border-bottom: 1px solid var(--border);
+    }}
+
+    .vis-gallery-tabs {{
+      display: flex;
+      gap: 0.45rem;
+      overflow-x: auto;
+      flex: 1;
+      min-width: 0;
+      padding-bottom: 0.1rem;
+    }}
+
+    .vis-gallery-tab {{
+      appearance: none;
+      flex: 0 0 auto;
+      inline-size: 9.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      padding: 0.3rem;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--muted);
+      font: inherit;
+      font-size: 0.74rem;
+      text-align: left;
+      cursor: pointer;
+    }}
+
+    .vis-gallery-tab:hover {{ border-color: var(--accent); color: var(--text); }}
+
+    .vis-gallery-tab[aria-selected="true"] {{
+      border-color: var(--accent);
+      color: var(--text);
+      font-weight: 640;
+      box-shadow: 0 0 0 2px var(--accent-soft);
+    }}
+
+    .vis-thumb {{
+      display: block;
+      inline-size: 100%;
+      block-size: 3.6rem;
+      object-fit: cover;
+      object-position: top;
+      border-radius: 5px;
+      background: var(--subtle);
+    }}
+
+    .vis-thumb:not([src]) {{ visibility: hidden; }}
+
+    .vis-tab-label {{
+      display: flex;
+      gap: 0.3rem;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }}
+
+    .vis-tab-num {{ color: var(--accent); font-weight: 700; }}
+
+    .vis-gallery-nav {{ display: flex; align-items: center; gap: 0.35rem; flex-shrink: 0; }}
+
+    .vis-gallery-step {{
+      appearance: none;
+      inline-size: 2rem;
+      block-size: 2rem;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 1.1rem;
+      line-height: 1;
+      cursor: pointer;
+    }}
+
+    .vis-gallery-step:hover {{ border-color: var(--accent); color: var(--accent); }}
+
+    .vis-gallery-count {{
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 0.74rem;
+      color: var(--muted);
+      min-inline-size: 3rem;
+      text-align: center;
+    }}
+
+    .vis-gallery-slides > .visual-card {{ border: 0; border-radius: 0; }}
+    .vis-gallery-slides > .visual-card[hidden] {{ display: none; }}
+
+    @media (max-width: 640px) {{
+      .vis-gallery-bar {{ flex-direction: column; align-items: stretch; }}
+      .vis-gallery-nav {{ justify-content: space-between; }}
+      .vis-gallery-tab {{ inline-size: 7.5rem; }}
+    }}
     .visual-overlay {{ position: absolute; inset: 0; inline-size: 100%; block-size: 100%; pointer-events: none; }}
     .visual-caption {{
       padding: 0.5rem 0.75rem;
@@ -4856,6 +5595,52 @@ def build_html_artifact(
       const zoomStage = document.getElementById("zoom-stage");
       const zoomCaption = document.getElementById("zoom-caption");
 
+      // Screenshot galleries (3+ screenshots in one block): one large image + thumbnail strip
+      function showGallerySlide(gallery, rawIdx, focusTab = false) {{
+        if (!gallery) return;
+        const slides = Array.from(gallery.querySelectorAll(".vis-gallery-slides > .visual-card"));
+        const tabs = Array.from(gallery.querySelectorAll(".vis-gallery-tab"));
+        const total = slides.length;
+        if (!total) return;
+        const idx = ((rawIdx % total) + total) % total;
+        slides.forEach((slide, i) => {{ slide.hidden = i !== idx; }});
+        tabs.forEach((tab, i) => {{
+          tab.setAttribute("aria-selected", String(i === idx));
+          tab.tabIndex = i === idx ? 0 : -1;
+        }});
+        gallery.setAttribute("data-active", String(idx));
+        const counter = gallery.querySelector(".vis-gallery-count");
+        if (counter) counter.textContent = `${{idx + 1}} / ${{total}}`;
+        if (tabs[idx]) {{
+          tabs[idx].scrollIntoView({{ block: "nearest", inline: "nearest" }});
+          if (focusTab) tabs[idx].focus();
+        }}
+      }}
+
+      document.querySelectorAll(".vis-gallery").forEach((gallery) => {{
+        gallery.querySelectorAll("img.vis-thumb[data-thumb-for]").forEach((thumb) => {{
+          const slide = document.getElementById(thumb.getAttribute("data-thumb-for"));
+          const full = slide && slide.querySelector(".visual-stage img");
+          if (full && full.getAttribute("src")) thumb.setAttribute("src", full.getAttribute("src"));
+        }});
+      }});
+
+      document.addEventListener("keydown", (event) => {{
+        const tab = event.target && event.target.closest && event.target.closest(".vis-gallery-tab");
+        if (!tab) return;
+        const gallery = tab.closest(".vis-gallery");
+        const current = Number(gallery.getAttribute("data-active") || "0");
+        const total = gallery.querySelectorAll(".vis-gallery-tab").length;
+        let next = null;
+        if (event.key === "ArrowRight") next = current + 1;
+        else if (event.key === "ArrowLeft") next = current - 1;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = total - 1;
+        if (next === null) return;
+        event.preventDefault();
+        showGallerySlide(gallery, next, true);
+      }});
+
       // Scope Filter Controls
       const scopeBtn = document.getElementById("scope-filter-btn");
       const scopePopover = document.getElementById("scope-filter-popover");
@@ -5306,6 +6091,20 @@ def build_html_artifact(
       }}
 
       document.addEventListener("click", (event) => {{
+        // Screenshot gallery tabs and previous / next buttons
+        const galleryTab = event.target.closest(".vis-gallery-tab");
+        if (galleryTab) {{
+          showGallerySlide(galleryTab.closest(".vis-gallery"), Number(galleryTab.getAttribute("data-gallery-index") || "0"));
+          return;
+        }}
+        const galleryStep = event.target.closest("[data-gallery-step]");
+        if (galleryStep) {{
+          const gallery = galleryStep.closest(".vis-gallery");
+          const current = Number(gallery.getAttribute("data-active") || "0");
+          showGallerySlide(gallery, current + Number(galleryStep.getAttribute("data-gallery-step") || "1"));
+          return;
+        }}
+
         // Interactive Diff-Block Highlight close / switch / toggle
         const closeHlBtn = event.target.closest("[data-hl-close]");
         if (closeHlBtn) {{
@@ -5582,17 +6381,22 @@ def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> st
     lines: list[str] = [
         f"# {title}",
         "",
-        f"{ov.get('whole_task') or ov['tldr']}",
-        "",
     ]
+    links = collect_overview_links(plan)
+    if links:
+        lines.append(
+            " · ".join(f"[{VALID_LINK_KINDS.get(lk['kind'], 'Link')}: {lk['label']}]({lk['url']})" for lk in links)
+        )
+        lines.append("")
+    lines.extend([f"{ov.get('whole_task') or ov['tldr']}", ""])
+    if ov.get("this_pr_part"):
+        lines.append(f"- **What we built in this PR:** {ov['this_pr_part']}")
     for vis in ov.get("visuals") or []:
         if isinstance(vis, dict) and (vis.get("src") or vis.get("figma_url")):
             v_cap = str(vis.get("caption") or vis.get("source_label") or "Big-picture screenshot").strip()
             v_marks = [str(a.get("label")).strip() for a in (vis.get("annotations") or []) if isinstance(a, dict) and a.get("label")]
             mark_note = f" (red marks: {', '.join(v_marks)})" if v_marks else ""
             lines.append(f"- **Visual:** {v_cap}{mark_note}")
-    if ov.get("this_pr_part"):
-        lines.append(f"- **What we built in this PR:** {ov['this_pr_part']}")
     lines.extend(
         [
             f"- **Before:** {ov['before_state']}",
@@ -5600,6 +6404,33 @@ def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> st
             "",
         ]
     )
+
+    footprint_rows = build_change_footprint(manifest, plan)
+    if footprint_rows:
+        lines.extend(["## What this PR touches", "", "| Part | What changed | Size |", "| :--- | :--- | :--- |"])
+        for row in footprint_rows:
+            part = f"{row['label']} (`{row['path']}`)" if row["label"] else f"`{row['path']}`"
+            change = row["change"] or ", ".join(p.rsplit("/", 1)[-1] for p in row["files"][:3])
+            if row["entry_points"]:
+                change += " — " + ", ".join(f"`{e}`" for e in row["entry_points"])
+            n_files = len(row["files"])
+            size = f"{n_files} file{'s' if n_files != 1 else ''}, +{row['additions']:,} / −{row['deletions']:,}"
+            safe_change = change.replace("|", r"\|")
+            lines.append(f"| {part} | {safe_change} | {size} |")
+        lines.append("")
+
+    facts = ov.get("_ship_facts") or []
+    if facts:
+        lines.extend(["## Ship facts", ""])
+        for fact in facts:
+            if fact["status"] == "present":
+                lines.append(f"- **{fact['label']}:** {fact['value']}")
+            elif fact["status"] == "unknown":
+                lines.append(f"- **{fact['label']}:** not checked yet")
+        none_labels = [f["label"] for f in facts if f["status"] == "none"]
+        if none_labels:
+            lines.append(f"- **None:** {', '.join(none_labels)}")
+        lines.append("")
 
     for idx, st in enumerate(plan["steps"], start=1):
         lyr = VALID_LAYERS[st["layer"]]

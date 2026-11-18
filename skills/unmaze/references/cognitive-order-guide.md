@@ -22,14 +22,13 @@ Every piece of text—`overview`, chapter summaries, step titles, `explanation`,
 
 ---
 
-## 2. Start Overview With the Whole Task + Screenshots (Then Optional PR Part)
+## 2. Overview: Whole Task in One Breath, Then Everything About THIS PR
 
-A PR is often just one piece of a bigger task or multi-PR project (though sometimes one PR ships the whole thing). Either way, a reviewer gets lost if you jump straight into local code details without showing the big picture first:
-- **Explain the whole task (`overview.whole_task`):** In 1–2 short, super casual sentences in simple English, explain the **overall product or engineering goal** we're solving.
-- **Show big-picture red-marked screenshots right on Overview (`overview.visuals`):** Whenever UI visuals apply, put at least one red-marked screenshot right in `overview.visuals` so the reviewer sees what the whole thing looks like immediately on the first screen.
-- **Say what part this PR built—only when it's a partial slice (`overview.this_pr_part`):** If this PR is part of a bigger task, add 1 casual sentence saying which piece we built in this PR (and what's separate). **If this PR builds the whole task end-to-end, omit `this_pr_part` completely!**
-
----
+A PR is often one piece of a bigger task. Reviewers need the big picture, but they approve **this PR**—so the Overview spends most of its space on what this PR touches and what ships with it:
+- **Links first (`overview.links`):** the main ticket, the design file and the spec as pills under the title, whenever they exist.
+- **Whole task in 1–2 sentences (`overview.whole_task`):** the overall product or engineering goal, in simple casual English. Never longer than the "This PR" part.
+- **"This PR" block right under it:** `this_pr_part` (only for a partial slice), the **change footprint** (`overview.footprint`: every deployable unit touched, with new or changed entry points) and the **ship facts** (`overview.ship_facts`: migrations, backfills, config, flags, dependencies, contract changes, deploy order—"none" said out loud).
+- **One hero screenshot (`overview.visuals`):** the whole feature with red marks on what this PR feeds. Step-specific crops stay in their steps; never show the same screenshot twice.
 
 ## 3. Split Multi-Concern Diffs Into Ordered Chapters (`chapters[]`)
 

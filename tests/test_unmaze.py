@@ -19,8 +19,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "skills" / "unmaze" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
+import board_registry  # noqa: E402
 import build_artifact  # noqa: E402
 import parse_diff  # noqa: E402
+import refresh_plan  # noqa: E402
 
 
 class UnmazeTestSuite(unittest.TestCase):
@@ -32,10 +34,10 @@ class UnmazeTestSuite(unittest.TestCase):
             (REPO_ROOT / "examples" / "sample-plan.json").read_text(encoding="utf-8")
         )
 
-    def _build_sample_manifest(self) -> dict:
+    def _build_sample_manifest(self, patch_text: str | None = None) -> dict:
         pr_url = "https://github.com/acme/payments/pull/142"
         files, hunks = parse_diff.parse_unified_diff(
-            self.sample_patch,
+            patch_text if patch_text is not None else self.sample_patch,
             repo_web_url="https://github.com/acme/payments",
             host_kind="github",
             pr_url=pr_url,
@@ -202,6 +204,26 @@ class UnmazeTestSuite(unittest.TestCase):
                     "tldr": "Touches `AuthCore` and <script>evil()</script>.",
                     "before_state": "before",
                     "after_state": "after",
+                    "links": [
+                        {"kind": "ticket", "label": "<script>tix()</script>", "url": "https://example.com/browse/X-1"}
+                    ],
+                    "footprint": [
+                        {
+                            "path": "xss.ts",
+                            "label": "<script>fp()</script>",
+                            "change": "Adds <script>chg()</script>.",
+                            "entry_points": ["<img src=y onerror=alert(2)>"],
+                        }
+                    ],
+                    "ship_facts": {
+                        "schema_migrations": "none",
+                        "data_backfills": "none",
+                        "config_and_secrets": "Adds <script>ship()</script>.",
+                        "feature_flags": "none",
+                        "dependencies": "none",
+                        "api_contracts": "unknown",
+                        "deploy_order": "none",
+                    },
                 },
                 "concepts": [
                     {
@@ -269,6 +291,9 @@ class UnmazeTestSuite(unittest.TestCase):
             self.assertNotIn("<script>bad()</script>", rendered)
             self.assertNotIn("<img src=x onerror=alert(1)>", rendered)
             self.assertNotIn("javascript:alert(1)", rendered)
+            for payload in ("<script>tix()</script>", "<script>fp()</script>", "<script>chg()</script>",
+                            "<img src=y onerror=alert(2)>", "<script>ship()</script>"):
+                self.assertNotIn(payload, rendered)
 
             # Arc sidebar + Concept Modal + Single-spaced diff + SVG overlay
             self.assertIn('class="arc-sidebar"', rendered)
@@ -408,12 +433,16 @@ class UnmazeTestSuite(unittest.TestCase):
         md_partial = build_artifact.build_markdown_summary(manifest, validated_partial)
         ov_section = rendered_partial.split('id="step-overview"', 1)[1].split("</section>", 1)[0]
         self.assertIn("Big Picture · Payments Admin Console", ov_section)
-        self.assertIn('class="pr-part-card"', ov_section)
+        self.assertIn('class="this-pr-block"', ov_section)
         self.assertIn("What we built in this PR", ov_section)
-        self.assertLess(ov_section.index('class="visual-card"'), ov_section.index('class="pr-part-card"'))
+        # The PR-specific block now comes right after the whole-task sentence, BEFORE any screenshot.
+        self.assertLess(ov_section.index('class="lead-text"'), ov_section.index('class="this-pr-block"'))
+        self.assertLess(ov_section.index('class="this-pr-block"'), ov_section.index('class="visual-card"'))
+        # Links row sits right under the title.
+        self.assertLess(ov_section.index('class="source-links"'), ov_section.index('class="lead-text"'))
         self.assertIn("- **What we built in this PR:**", md_partial)
 
-        # 2. Whole-task PR case: `this_pr_part` omitted -> succeeds cleanly and omits `.pr-part-card`!
+        # 2. Whole-task PR case: `this_pr_part` omitted -> block stays (footprint + ship facts), no partial-PR lead.
         full_task_plan = copy.deepcopy(self.sample_plan)
         full_task_plan["overview"].pop("this_pr_part", None)
         validated_full = build_artifact.validate_and_normalize_plan(
@@ -423,8 +452,137 @@ class UnmazeTestSuite(unittest.TestCase):
             manifest, validated_full, search_dirs=[REPO_ROOT / "examples"]
         )
         md_full = build_artifact.build_markdown_summary(manifest, validated_full)
-        self.assertNotIn('<div class="pr-part-card">', rendered_full)
+        self.assertNotIn('class="this-pr-lead"', rendered_full)
+        self.assertIn("What this PR changes", rendered_full)
+        self.assertIn('footprint-table', rendered_full)
         self.assertNotIn("What we built in this PR", md_full)
+
+    def test_ship_facts_are_required_and_none_answers_collapse(self) -> None:
+        manifest = self._build_sample_manifest()
+
+        missing = copy.deepcopy(self.sample_plan)
+        missing["overview"].pop("ship_facts")
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_missing:
+            build_artifact.validate_and_normalize_plan(manifest, missing)
+        self.assertIn("Ship Facts Check FAILED", str(ctx_missing.exception))
+
+        partial = copy.deepcopy(self.sample_plan)
+        partial["overview"]["ship_facts"].pop("deploy_order")
+        partial["overview"]["ship_facts"]["coffee"] = "none"
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_partial:
+            build_artifact.validate_and_normalize_plan(manifest, partial)
+        self.assertIn("`deploy_order`", str(ctx_partial.exception))
+        self.assertIn("`overview.ship_facts.coffee` is not a known ship fact", str(ctx_partial.exception))
+
+        plan = copy.deepcopy(self.sample_plan)
+        plan["overview"]["ship_facts"]["feature_flags"] = "Unknown"
+        validated = build_artifact.validate_and_normalize_plan(manifest, plan)
+        rendered = build_artifact.build_html_artifact(manifest, validated, search_dirs=[REPO_ROOT / "examples"])
+        md_out = build_artifact.build_markdown_summary(manifest, validated)
+        ship = rendered.split('<h3 class="block-heading">Ship facts</h3>', 1)[1].split("</div>", 1)[0]
+        # Answers that matter are listed first, one row each; "none" answers collapse into one muted line.
+        self.assertEqual(ship.count('class="ship-item is-present"'), 3)
+        self.assertEqual(ship.count('class="ship-item is-unknown"'), 1)
+        self.assertIn('<p class="ship-none">', ship)
+        self.assertIn("Data backfills or one-off scripts · Config, env vars or secrets", ship)
+        self.assertLess(ship.index("is-present"), ship.index("is-unknown"))
+        self.assertIn("- **Schema migrations:** Adds the", md_out)
+        self.assertIn("- **Feature flags:** not checked yet", md_out)
+        self.assertIn("- **None:** Data backfills or one-off scripts", md_out)
+
+    def test_source_links_and_change_footprint(self) -> None:
+        manifest = self._build_sample_manifest()
+
+        # Links: declared ticket + spec, plus the Figma file a screenshot points at (added once).
+        validated = build_artifact.validate_and_normalize_plan(manifest, copy.deepcopy(self.sample_plan))
+        links = build_artifact.collect_overview_links(validated)
+        self.assertEqual([lk["kind"] for lk in links], ["ticket", "spec", "design"])
+        self.assertEqual(sum(1 for lk in links if "figma.com" in lk["url"]), 1)
+
+        bad_link = copy.deepcopy(self.sample_plan)
+        bad_link["overview"]["links"][0]["url"] = "javascript:alert(1)"
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_link:
+            build_artifact.validate_and_normalize_plan(manifest, bad_link)
+        self.assertIn("must be an absolute http(s) URL", str(ctx_link.exception))
+
+        # Footprint: declared prefixes first (in plan order), then auto-detected units by size.
+        rows = build_artifact.build_change_footprint(manifest, validated)
+        self.assertEqual(
+            [r["path"] for r in rows][:3], ["services/idempotency", "api/routes/webhooks.ts", "migrations"]
+        )
+        self.assertEqual(sum(len(r["files"]) for r in rows), len(manifest["files"]))
+        self.assertIn("(repo root)", [r["path"] for r in rows])
+        self.assertEqual(build_artifact.detect_deployable_unit("apps/analytics/src/api/v1/x.py"), "apps/analytics")
+        self.assertEqual(build_artifact.detect_deployable_unit("docs/plan.md"), "docs")
+        self.assertEqual(build_artifact.detect_deployable_unit("README.md"), "(repo root)")
+
+        ghost = copy.deepcopy(self.sample_plan)
+        ghost["overview"]["footprint"].append({"path": "apps/nowhere", "change": "Nothing."})
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_ghost:
+            build_artifact.validate_and_normalize_plan(manifest, ghost)
+        self.assertIn("matches zero changed files", str(ctx_ghost.exception))
+
+    def test_overview_screenshot_cap_gallery_and_before_after_pair(self) -> None:
+        manifest = self._build_sample_manifest()
+        shot = copy.deepcopy(self.sample_plan["overview"]["visuals"][0])
+        shot.pop("figma_url", None)
+
+        # Overview: more than 3 screenshots is rejected (one hero + crops belong in their steps).
+        crowded = copy.deepcopy(self.sample_plan)
+        crowded["overview"]["visuals"] = [copy.deepcopy(shot) for _ in range(4)]
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_cap:
+            build_artifact.validate_and_normalize_plan(manifest, crowded)
+        self.assertIn("Overview Focus Check FAILED", str(ctx_cap.exception))
+
+        # 3 screenshots in one step -> gallery with 3 tabs, only the first slide visible.
+        gallery_plan = copy.deepcopy(self.sample_plan)
+        gallery_plan["steps"][3]["visuals"] = [
+            {**copy.deepcopy(shot), "label": f"View {i}"} for i in range(1, 4)
+        ]
+        validated = build_artifact.validate_and_normalize_plan(
+            manifest, gallery_plan, search_dirs=[REPO_ROOT / "examples"]
+        )
+        rendered = build_artifact.build_html_artifact(manifest, validated, search_dirs=[REPO_ROOT / "examples"])
+        step4 = rendered.split('id="step-4"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('class="vis-gallery"', step4)
+        self.assertEqual(step4.count('class="vis-gallery-tab"'), 3)
+        self.assertEqual(step4.count('role="tabpanel"'), 3)
+        self.assertEqual(step4.count('role="tabpanel" aria-labelledby="gal-step-4-0-tab">'), 1)
+        self.assertEqual(len(re.findall(r'aria-labelledby="gal-step-4-[12]-tab" hidden>', step4)), 2)
+        self.assertIn("View 2", step4)
+        self.assertIn('<span class="vis-gallery-count" aria-live="polite">1 / 3</span>', step4)
+        self.assertNotIn("\x00", rendered)
+
+        # 2 screenshots -> plain stack, no gallery, nothing hidden.
+        pair_plan = copy.deepcopy(self.sample_plan)
+        pair_plan["steps"][3]["visuals"] = [copy.deepcopy(shot), copy.deepcopy(shot)]
+        validated_two = build_artifact.validate_and_normalize_plan(manifest, pair_plan)
+        rendered_two = build_artifact.build_html_artifact(manifest, validated_two, search_dirs=[REPO_ROOT / "examples"])
+        step4_two = rendered_two.split('id="step-4"', 1)[1].split("</section>", 1)[0]
+        self.assertNotIn('class="vis-gallery"', step4_two)
+        self.assertEqual(step4_two.count('<figure class="visual-card">'), 2)
+
+        # before/after roles -> side-by-side pair that never joins a gallery.
+        compare_plan = copy.deepcopy(self.sample_plan)
+        compare_plan["steps"][3]["visuals"] = [
+            {**copy.deepcopy(shot), "role": "before"},
+            {**copy.deepcopy(shot), "role": "after"},
+            copy.deepcopy(shot),
+            copy.deepcopy(shot),
+        ]
+        validated_cmp = build_artifact.validate_and_normalize_plan(manifest, compare_plan)
+        rendered_cmp = build_artifact.build_html_artifact(manifest, validated_cmp, search_dirs=[REPO_ROOT / "examples"])
+        step4_cmp = rendered_cmp.split('id="step-4"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('class="vis-compare"', step4_cmp)
+        self.assertIn('vis-role-before', step4_cmp)
+        self.assertIn('vis-role-after', step4_cmp)
+        self.assertNotIn('class="vis-gallery"', step4_cmp)
+
+        bad_role = copy.deepcopy(self.sample_plan)
+        bad_role["steps"][3]["visuals"][0]["role"] = "sideways"
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_role:
+            build_artifact.validate_and_normalize_plan(manifest, bad_role)
+        self.assertIn(".role` must be one of", str(ctx_role.exception))
 
     def test_semantic_concept_sweep_cli_gate_new_task_concepts_and_no_flow_strip(self) -> None:
         manifest = self._build_sample_manifest()
@@ -621,6 +779,166 @@ class UnmazeTestSuite(unittest.TestCase):
         self.assertIsNotNone(steps_stack_css)
         self.assertNotIn("gap:", steps_stack_css.group(1))
         self.assertIn(".step-panel:not([hidden]) ~ .step-panel:not([hidden])", rendered)
+
+
+    def _edited_sample_patch(self) -> str:
+        """Sample PR after a follow-up push: one line inserted in the store, one brand-new docs file."""
+        patch = self.sample_patch
+        patch = patch.replace(
+            "@@ -0,0 +1,52 @@\n+import type { ClaimDecision",
+            "@@ -0,0 +1,53 @@\n+import type { ClaimDecision",
+        )
+        patch = patch.replace(
+            "+    this.leaseTtlMs = options.leaseTtlMs ?? 60_000;\n",
+            "+    this.leaseTtlMs = options.leaseTtlMs ?? 60_000;\n"
+            "+    this.leaseTtlMs = Math.max(this.leaseTtlMs, 1_000);\n",
+        )
+        docs = (
+            "diff --git a/docs/dedup.md b/docs/dedup.md\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/docs/dedup.md\n"
+            "@@ -0,0 +1,2 @@\n"
+            "+# Webhook dedup\n"
+            "+Retries within 60s are skipped.\n"
+        )
+        return patch.replace("diff --git a/index.ts b/index.ts", docs + "diff --git a/index.ts b/index.ts", 1)
+
+    def test_refresh_plan_carries_steps_over_to_a_newer_diff(self) -> None:
+        old_manifest = self._build_sample_manifest()
+        new_manifest = self._build_sample_manifest(self._edited_sample_patch())
+        new_ids = {h["file_path"]: h["id"] for h in new_manifest["hunks"]}
+        self.assertEqual(new_ids["docs/dedup.md"], "H004")
+        self.assertEqual(new_ids["services/idempotency/store.ts"], "H008")
+
+        refreshed, report = refresh_plan.refresh_plan(old_manifest, new_manifest, self.sample_plan)
+        by_id = {st["id"]: st for st in refreshed["steps"]}
+
+        # Renumbered hunks follow their lines; the inserted line shifts later slices by one.
+        self.assertEqual(by_id["step-1"]["hunk_ids"], ["H006", "H009"])
+        self.assertEqual(by_id["step-2"]["hunk_ids"], ["H008:1-35,53"])
+        self.assertEqual(by_id["step-3"]["hunk_ids"], ["H008:36-52"])
+        self.assertEqual(by_id["step-4"]["hunk_ids"], ["H003", "H002"])
+        self.assertEqual(refreshed["mechanical"]["groups"][0]["hunk_ids"], ["H005", "H007"])
+        self.assertEqual(
+            [(h["hunk_id"], h["lines"]) for h in by_id["step-2"]["diff_highlights"]],
+            [("H008", "15-30"), ("H008", "31-34")],
+        )
+        self.assertEqual(report["auto_assigned"], {"step-2": 1})
+        self.assertEqual(report["dropped_lines"], 0)
+        self.assertEqual([u["hunk_id"] for u in report["unclaimed_hunks"]], ["H004"])
+        self.assertIn("step-2", report["steps_to_reread"])
+        self.assertNotIn("step-4", report["steps_to_reread"])
+        # The original plan object is untouched.
+        self.assertEqual(self.sample_plan["steps"][1]["hunk_ids"], ["H007:1-34,52"])
+
+        # The builder then flags only the brand-new docs hunk...
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_new:
+            build_artifact.validate_and_normalize_plan(new_manifest, copy.deepcopy(refreshed))
+        self.assertIn("H004", str(ctx_new.exception))
+        self.assertNotIn("H008", str(ctx_new.exception))
+
+        # ...and passes once the agent places it.
+        refreshed["mechanical"]["groups"][0]["hunk_ids"].append("H004")
+        validated = build_artifact.validate_and_normalize_plan(new_manifest, refreshed)
+        self.assertEqual(len(validated["steps"]), 5)
+
+    def test_board_registry_records_boards_and_hook_nudges_once_per_push(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+
+            def git(*args: str) -> str:
+                return subprocess.run(
+                    ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+                ).stdout.strip()
+
+            git("init", "-q", "-b", "main")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "T")
+            (repo / "a.txt").write_text("one\n")
+            git("add", ".")
+            git("commit", "-q", "-m", "one")
+            git("checkout", "-q", "-b", "feat/board")
+            built_sha = git("rev-parse", "HEAD")
+
+            out = subprocess.run(
+                [sys.executable, str(SCRIPTS_DIR / "board_registry.py"), "work-dir", "--repo", str(repo), "--key", "pr-7"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            work_dir = Path(out)
+            self.assertTrue(work_dir.is_dir())
+            self.assertIn(str(Path(".git") / "unmaze" / "boards" / "pr-7"), out)
+            (work_dir / "diff-manifest.json").write_text(json.dumps({
+                "meta": {"head_branch": "feat/board", "head_sha": built_sha,
+                         "refresh_args": ["--pr", "https://github.com/o/r/pull/7"],
+                         "pr_url": "https://github.com/o/r/pull/7"}
+            }))
+            subprocess.run(
+                [sys.executable, str(SCRIPTS_DIR / "board_registry.py"), "record", "--repo", str(repo),
+                 "--work-dir", str(work_dir), "--url", "https://claude.ai/artifact/abc"],
+                capture_output=True, text=True, check=True,
+            )
+
+            def run_hook(payload: dict) -> str:
+                return subprocess.run(
+                    [sys.executable, str(SCRIPTS_DIR / "board_registry.py"), "hook"],
+                    input=json.dumps({"cwd": str(repo), **payload}),
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+
+            push = {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "git push -u origin feat/board"}}
+            # Board is fresh -> no nudge.
+            self.assertEqual(run_hook(push), "")
+
+            (repo / "a.txt").write_text("two\n")
+            git("commit", "-q", "-am", "two")
+            # Non-push commands never nudge.
+            self.assertEqual(run_hook({**push, "tool_input": {"command": "git status"}}), "")
+            nudge = json.loads(run_hook(push))
+            ctx = nudge["hookSpecificOutput"]["additionalContext"]
+            self.assertEqual(nudge["hookSpecificOutput"]["hookEventName"], "PostToolUse")
+            self.assertIn("https://claude.ai/artifact/abc", ctx)
+            self.assertIn("--refresh", ctx)
+            self.assertIn("1 new commit", ctx)
+            # Same commit -> nudged only once (also not again at session start).
+            self.assertEqual(run_hook(push), "")
+            self.assertEqual(run_hook({"hook_event_name": "SessionStart"}), "")
+
+            # Pausing stops nudges for later commits.
+            subprocess.run([sys.executable, str(SCRIPTS_DIR / "board_registry.py"), "pause", "--repo", str(repo)],
+                           capture_output=True, text=True, check=True)
+            (repo / "a.txt").write_text("three\n")
+            git("commit", "-q", "-am", "three")
+            self.assertEqual(run_hook(push), "")
+            subprocess.run([sys.executable, str(SCRIPTS_DIR / "board_registry.py"), "resume", "--repo", str(repo)],
+                           capture_output=True, text=True, check=True)
+            self.assertIn("2 new commits", run_hook({"hook_event_name": "SessionStart"}))
+
+            # Outside any git repo the hook stays silent.
+            self.assertEqual(
+                subprocess.run(
+                    [sys.executable, str(SCRIPTS_DIR / "board_registry.py"), "hook"],
+                    input=json.dumps({"cwd": tmp, **push}), capture_output=True, text=True, check=True,
+                ).stdout.strip(),
+                "",
+            )
+
+    def test_parse_diff_detects_ticket_links(self) -> None:
+        body = (
+            "Fixes https://acme.atlassian.net/browse/PAY-412, see https://linear.app/acme/issue/PAY-9 "
+            "and https://github.com/acme/payments/issues/12. Not https://github.com/acme/payments/pull/9."
+        )
+        self.assertEqual(
+            parse_diff.extract_ticket_links_from_text(body),
+            [
+                "https://acme.atlassian.net/browse/PAY-412",
+                "https://linear.app/acme/issue/PAY-9",
+                "https://github.com/acme/payments/issues/12",
+            ],
+        )
+        self.assertTrue(board_registry.PUSH_CMD_RE.search("cd x && git push --force-with-lease"))
+        self.assertFalse(board_registry.PUSH_CMD_RE.search('git commit -m "push it"'))
 
 
 if __name__ == "__main__":

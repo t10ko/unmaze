@@ -1,8 +1,54 @@
 {
   "title": "PR #142: Idempotent Webhook Ingestion & Lease Recovery",
   "overview": {
+    "links": [
+      {
+        "kind": "ticket",
+        "label": "PAY-412",
+        "url": "https://linear.app/acme/issue/PAY-412"
+      },
+      {
+        "kind": "spec",
+        "label": "Webhook dedup spec",
+        "url": "https://github.com/acme/payments/blob/main/docs/webhook-dedup.md"
+      }
+    ],
     "whole_task": "We're making Stripe and GitHub webhooks safe against duplicate retries and surfacing live dedup status in the [[payments-admin-console|Payments Admin Console]] so support can see skipped events and [[claimed-lease|active locks]].",
     "this_pr_part": "This PR builds the backend half: the [[idempotency-store|Postgres lock table]] and [[webhook-router|`/webhooks/:provider`]] guard so retries stop double-charging right away—the [[payments-admin-console|Admin Console]] manual-retry button comes in the next PR.",
+    "footprint": [
+      {
+        "path": "services/idempotency",
+        "label": "Idempotency store",
+        "change": "New [[idempotency-store|Postgres lock store]] that claims, finishes and frees one webhook event at a time.",
+        "entry_points": [
+          "claimOrSkip()",
+          "markCompleted()",
+          "releaseClaim()"
+        ]
+      },
+      {
+        "path": "api/routes/webhooks.ts",
+        "label": "Webhook route",
+        "change": "[[webhook-router|`/webhooks/:provider`]] now checks the lock before it calls `WebhookDispatcher`.",
+        "entry_points": [
+          "POST /webhooks/:provider"
+        ]
+      },
+      {
+        "path": "migrations",
+        "label": "Database",
+        "change": "Adds the `webhook_idempotency_keys` table."
+      }
+    ],
+    "ship_facts": {
+      "schema_migrations": "Adds the `webhook_idempotency_keys` table, so run the migration before the new API rolls out.",
+      "data_backfills": "none",
+      "config_and_secrets": "none",
+      "feature_flags": "none",
+      "dependencies": "none",
+      "api_contracts": "`/webhooks/:provider` now answers duplicates with `200 deduplicated` instead of running them again.",
+      "deploy_order": "Migration first, then the API; old pods ignore the new table, so rolling back is safe."
+    },
     "before_state": "Whenever Stripe or GitHub retried a webhook, we ran `WebhookDispatcher` again and could charge a customer twice.",
     "after_state": "Now `webhookRouter` locks `(provider, event_id)` in `PostgresIdempotencyStore` first and replies `200 OK` right away if we've already seen it.",
     "visuals": [

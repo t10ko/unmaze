@@ -28,6 +28,11 @@ DIFF_GIT_RE = re.compile(r"^diff --git (.+)$")
 FIGMA_URL_RE = re.compile(r"https?://(?:www\.)?figma\.com/(?:design|file|proto|board)/[^\s)>\"]+")
 MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((https?://[^\s)]+)\)")
 HTML_IMG_RE = re.compile(r"<img\b[^>]*?\bsrc=[\"'](https?://[^\"']+)[\"'][^>]*>", re.IGNORECASE)
+# Issue-tracker links (Jira `/browse/KEY-1`, Linear `/issue/KEY-1`, GitHub/GitLab `/issues/1`,
+# Shortcut `/story/1`, Azure DevOps `/_workitems/edit/1`, generic `/tickets/1`).
+TICKET_URL_RE = re.compile(
+    r"https?://[^\s)>\]\"']+/(?:browse|issues?|story|_workitems/edit|tickets?)/[A-Za-z0-9][\w.-]*"
+)
 
 MAX_EXPAND_LINES = 60
 
@@ -812,6 +817,20 @@ def extract_visual_refs_from_text(text: str) -> dict[str, list[dict[str, str]]]:
     return {"figma_urls": figma_list, "image_urls": img_list}
 
 
+def extract_ticket_links_from_text(text: str, limit: int = 5) -> list[str]:
+    """Extract issue-tracker URLs from a PR description, in order, without duplicates."""
+    if not text:
+        return []
+    found: list[str] = []
+    for m in TICKET_URL_RE.finditer(text):
+        url = m.group(0).rstrip(".,;:")
+        if url not in found:
+            found.append(url)
+        if len(found) >= limit:
+            break
+    return found
+
+
 def detect_default_branch(cwd: str) -> str:
     res = run_cmd(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=cwd, check=False)
     if res.returncode == 0 and res.stdout.strip():
@@ -836,6 +855,10 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
         "head_ref": None,
         "head_sha": None,
         "detected_visuals": {"figma_urls": [], "image_urls": []},
+        "detected_tickets": [],
+        # Branch the reviewed changes live on, and the parse_diff args that rebuild the same review later.
+        "head_branch": None,
+        "refresh_args": None,
     }
 
     git_check = run_cmd(["git", "rev-parse", "--is-inside-work-tree"], cwd=cwd, check=False)
@@ -893,7 +916,10 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
         meta["base_ref"] = pr_info.get("baseRefName")
         meta["head_ref"] = pr_info.get("headRefOid") or pr_info.get("headRefName")
         meta["head_sha"] = pr_info.get("headRefOid")
+        meta["head_branch"] = pr_info.get("headRefName")
         meta["detected_visuals"] = extract_visual_refs_from_text(pr_info.get("body") or "")
+        meta["detected_tickets"] = extract_ticket_links_from_text(pr_info.get("body") or "")
+        meta["refresh_args"] = ["--pr", pr_info.get("url") or pr_target]
         if meta["pr_url"]:
             pr_repo_match = re.match(r"^(https?://[^/]+/[^/]+/[^/]+)/pull/\d+", meta["pr_url"])
             if pr_repo_match:
@@ -918,6 +944,7 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
     cur_branch = branch_res.stdout.strip() if branch_res.returncode == 0 else "HEAD"
     meta["head_sha"] = head_sha
     meta["head_ref"] = head_sha or cur_branch
+    meta["head_branch"] = cur_branch if cur_branch != "HEAD" else None
 
     if args.staged:
         meta["source_type"] = "staged"
@@ -946,6 +973,9 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
                     meta["pr_number"] = pr_info.get("number")
                     meta["pr_url"] = meta["pr_url"] or pr_info.get("url")
                     meta["detected_visuals"] = extract_visual_refs_from_text(pr_info.get("body") or "")
+                    meta["detected_tickets"] = extract_ticket_links_from_text(pr_info.get("body") or "")
+                    if pr_info.get("url"):
+                        meta["refresh_args"] = ["--pr", pr_info["url"]]
                     if pr_info.get("title") and not meta["title"]:
                         meta["title"] = f"PR #{pr_info.get('number')}: {pr_info.get('title')}"
                     if meta["pr_url"] and "github" in meta["pr_url"]:
@@ -964,6 +994,8 @@ def collect_diff_source(args: argparse.Namespace) -> dict[str, Any]:
 
     meta["source_type"] = "git_range"
     meta["base_ref"] = git_range
+    if not meta["refresh_args"]:
+        meta["refresh_args"] = ["--range", git_range]
     meta["title"] = meta["title"] or f"Changes in `{git_range}` ({cur_branch})"
     if ".." in git_range:
         rhs = git_range.split("..")[-1].strip() or "HEAD"
@@ -990,6 +1022,12 @@ def format_readable_digest(manifest: dict[str, Any], max_inline_lines: int = 250
     )
     if meta.get("pr_url"):
         out.append(f"PR URL: {meta['pr_url']}")
+    tickets = meta.get("detected_tickets") or []
+    if tickets:
+        out.append("")
+        out.append("## Detected Ticket Links in PR (put the main one in `overview.links`)")
+        for url in tickets:
+            out.append(f"- Ticket: {url}")
     vis = meta.get("detected_visuals") or {}
     if vis.get("figma_urls") or vis.get("image_urls"):
         out.append("")

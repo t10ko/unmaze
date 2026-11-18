@@ -1,19 +1,22 @@
 ---
 name: unmaze
 description: Resurrects human code review in the AI era by turning sprawling pull requests and git diffs into a shareable, step-by-step interactive review guide—with Arc-style stacked PR chapters, cumulative file evolution across the timeline, clickable repo concept modals, annotated Figma/UI screenshots, and verified 100% diff coverage. Use when asked to review a PR, walk through a diff, explain branch changes, untangle a large AI-generated PR, or when invoked via /unmaze.
-argument-hint: "[pr-number | pr-url | git-range | --staged | path.patch]"
+argument-hint: "[pr-number | pr-url | git-range | --staged | path.patch | --refresh]"
 license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.7.2"
+  version: "0.8.0"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
 
 GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at once on reviewers who didn't write the code by hand and may not know how that subsystem works globally. `unmaze` turns any PR or Git diff into a **guided, low-cognitive-load interactive Artifact** with:
 
-- **Big-Picture Overview First** (explains the **whole task** casually in simple, short English with red-marked screenshots up front—and if this PR is only one slice of a bigger effort, clearly says which part we built here),
+- **Big-Picture Overview First, Then "This PR"** (one casual sentence on the **whole task**, then a "This PR" block right under it: what this PR builds, every deployable part it touches, and its ship facts—migrations, flags, config, dependencies, contract changes and deploy order, with "none" said out loud—before one hero screenshot),
+- **Ticket, Design & Spec Links Up Top** (the main ticket, the Figma file and the spec sit as link pills under the Overview title whenever they exist),
+- **Smart Screenshot Grouping** (3+ screenshots in one block become a gallery—one large image plus a captioned thumbnail strip; a before/after pair sits side by side; screenshots never grow taller than ~70% of the window),
+- **Boards That Stay Fresh** (a published board is remembered per branch, and after every later `git push` Claude refreshes it at the same URL without anyone asking for `/unmaze` again),
 - **Super Casual Teammate Voice Everywhere** (written like a teammate walking you through the PR over Slack—contractions, `we`/`you`, zero stiff docs or AI jargon),
 - **Arc-style Chapters** (splitting large PRs into ordered chapters—`Chapter 1`, `Chapter 2`—in a clean sidebar),
 - **Top-Bar Role & Area Tree Filter** (2-level `Role Surface -> App Area` filter that dims unrelated chapters and steps so FE, BE, or domain engineers can review just their slice),
@@ -31,7 +34,15 @@ User arguments (if any): `$ARGUMENTS`
 
 ### Step 1: Parse the Diff & Full Post-Change File Context
 
-Resolve `<SKILL_DIR>` as the directory containing this `SKILL.md` file. Write working files to a temporary directory (`WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/unmaze.XXXXXX")"`) so you never leave untracked files in the repository being reviewed.
+Resolve `<SKILL_DIR>` as the directory containing this `SKILL.md` file.
+
+**If `$ARGUMENTS` contains `--refresh`** (or a hook message told you a published board is out of date), skip to **Refresh a Published Board** at the end of this file.
+
+Pick a **durable work dir inside the git directory** so the plan survives for later refreshes and never shows up as untracked files (use `pr-<number>` as the key for PRs, the range or branch name otherwise):
+```bash
+WORK_DIR="$(python3 "<SKILL_DIR>/scripts/board_registry.py" work-dir --key "<pr-142 | branch-or-range>")" \
+  || WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/unmaze.XXXXXX")"   # fallback outside a git repo
+```
 
 Map `$ARGUMENTS` to `<SKILL_DIR>/scripts/parse_diff.py`:
 - **PR number or URL** (`142`, `#142`, `https://github.com/org/repo/pull/142`):
@@ -75,10 +86,14 @@ Map `$ARGUMENTS` to `<SKILL_DIR>/scripts/parse_diff.py`:
 
 Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cognitive-order-guide.md`, then write `$WORK_DIR/plan.json`.
 
-#### A. Big-Picture Overview (`overview`): Explain the Whole Task First + Screenshots
-- **`overview.whole_task` (Required):** Explain **the whole task**—the big picture of what we're building or fixing overall (even if it spans multiple PRs). Keep it **short (1–2 sentences)**, **super casual**, and in **simple everyday English**.
-- **`overview.visuals` (Big-Picture Screenshots Up Front):** Place at least one **red-marked screenshot** right inside `overview.visuals` whenever UI visuals apply so the reviewer sees what the whole feature looks like on the very first screen—before reading any code!
-- **`overview.this_pr_part` (Optional — only when this PR is part of a bigger task):** If this PR only builds one piece of a larger task/epic, casually state in 1 short sentence **what part we built in this PR** (and what comes separately). **If this PR implements the whole task end-to-end, omit `this_pr_part` completely!**
+#### A. Overview (`overview`): Whole Task in One Breath, Then Everything About THIS PR
+A reviewer must be able to answer **"what does this PR touch, and what could break when it ships?"** from the first screen, without reading code. The Overview renders in this order: links → whole task → "This PR" block → hero screenshot → before/after → terms → chapters.
+- **`overview.links` (Ticket, Design, Spec):** `[{"kind": "ticket" | "design" | "spec" | "docs" | "other", "label": "PAY-412", "url": "https://..."}]`, at most 6. Take them from the PR body, the ticket and commit messages (`hunks-readable.txt` lists detected ticket and Figma links). Only add links you actually found; Figma URLs on screenshots are added automatically.
+- **`overview.whole_task` (Required):** **1–2 short, super casual sentences** on the whole task—the big picture of what we're building or fixing overall (even if it spans multiple PRs). Don't spend more words on it than on this PR.
+- **`overview.this_pr_part` (Only when this PR is one slice of a bigger task):** 1 short sentence on **what we built in this PR** and what comes separately. Omit it when this PR ships the whole task.
+- **`overview.footprint` (Recommended):** `[{"path": "apps/analytics", "label": "Analytics service", "change": "1 sentence on what changed there", "entry_points": ["GET /api/v1/.../resilience"]}]`—one entry per **deployable unit** (service, app, package, or main module folder in a single-app repo). `path` is a folder or file prefix; files it doesn't cover are grouped automatically by `apps/<x>`, `packages/<x>`, `services/<x>`, ... or their top-level folder, so **every changed file always shows up**. List new or changed routes, jobs, events, commands or public functions in `entry_points` (≤ 5).
+- **`overview.ship_facts` (Required, compiler-enforced):** answer **every** key with one short sentence, `"none"`, or `"unknown"`: `schema_migrations`, `data_backfills`, `config_and_secrets`, `feature_flags`, `dependencies`, `api_contracts`, `deploy_order`. "None" is useful information—say it out loud. Real answers render first; "none" answers collapse into one muted line. Pull these from the diff (migration files, flag checks, env reads, lockfiles, route/schema changes) and from the PR body's rollout or blast-radius notes.
+- **`overview.visuals` (One Hero Screenshot, max 3):** One red-marked screenshot of the whole feature, with marks on the parts **this PR** feeds. Step-specific crops belong in their steps—**never repeat in the Overview a screenshot a step already shows**. `build_artifact.py` rejects more than 3.
 - **`overview.before_state` & `overview.after_state`:** 1 short, casual sentence each showing life before vs. after.
 
 #### B. Chapters (`chapters[]`), 2-Level Area Scopes (`file_scopes`), & Zero-Forward-Reference Order
@@ -100,7 +115,8 @@ Read `<SKILL_DIR>/references/plan-schema.md` and `<SKILL_DIR>/references/cogniti
 - **Dynamic Visual Modulation (Rotate Containers):** Never write walls of prose. Pair the 1-sentence `explanation` with a compact `table` for state/input->outcome rules, bold-anchored `points` (`{"anchor": "...", "text": "..."}`) for mechanics, `visuals` for UI/Figma screens, and `callouts` only for real risks/assumptions.
 
 #### E. Compiler-Enforced Red-Marked Visuals (`visuals[]`)
-- Put big-picture red-marked screenshot(s) in `overview.visuals` and step-specific screenshots in `steps[*].visuals` wherever code connects to a user-visible screen, admin table, badge, form, or flow—including backend steps whose output feeds a frontend UI.
+- Put one big-picture hero screenshot in `overview.visuals` and step-specific screenshots in `steps[*].visuals` wherever code connects to a user-visible screen, admin table, badge, form, or flow—including backend steps whose output feeds a frontend UI.
+- **Grouping is automatic:** 3+ screenshots in one block render as a gallery (one large image + thumbnail strip), so give each a 2–4 word `"label"` for its thumbnail. Mark a changed screen with `"role": "before"` and `"role": "after"` to show the pair side by side instead.
 - Every screenshot item with `src` **MUST** exist on disk and **MUST** contain at least one `circle`, `arrow`, or `box` in `annotations[]`.
 - `build_artifact.py` **fails with exit code `2`** if zero red-marked screenshots are attached without checking first. When **no UI consumer exists anywhere** (e.g., pure CLI, SDK, infra, or internal job) or no app/Figma image is reachable, set top-level `"no_visuals_justification"` in `plan.json` explaining what you checked—the build then succeeds cleanly (`exit 0`) and drops the screenshot section without clutter.
 
@@ -161,5 +177,34 @@ If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, mi
 ### Step 7: Publish Artifact & Present Concise Summary
 
 1. **Publish via Claude Code `Artifact` tool (Primary):** Read `$WORK_DIR/unmaze-review.html` and invoke the `Artifact` tool so the user receives a live shareable `claude.ai/code/artifact/...` URL.
-2. **Local Fallback:** Include `$WORK_DIR/unmaze-review.html` (and `$WORK_DIR/unmaze-review.md`), opening locally only if `Artifact` is unavailable or `--open` was passed.
-3. **Low-Load Chat Summary:** Give a 1-sentence BLUF, a compact chapter/step table, top risks/gaps, and the Artifact link.
+2. **Remember the board for automatic refreshes:** right after publishing, record it so later pushes keep it fresh at the same URL:
+   ```bash
+   python3 "<SKILL_DIR>/scripts/board_registry.py" record --work-dir "$WORK_DIR" --url "<artifact-url>"
+   ```
+   The board is keyed by the PR's head branch. Tell the user in one line that the board now refreshes itself after each push, and that `board_registry.py pause` turns that off.
+3. **Local Fallback:** Include `$WORK_DIR/unmaze-review.html` (and `$WORK_DIR/unmaze-review.md`), opening locally only if `Artifact` is unavailable or `--open` was passed.
+4. **Low-Load Chat Summary:** Give a 1-sentence BLUF, a compact chapter/step table, top risks/gaps, and the Artifact link.
+
+---
+
+## Refresh a Published Board (`--refresh`, or when a hook says the board is out of date)
+
+The plugin's hook watches `git push` (and session start). When the branch moved past the commit a published board was built from, it tells you to refresh—**do it right away, without waiting for the user to ask for `/unmaze`**, then carry on with what you were doing.
+
+1. **Find the board:** `python3 "<SKILL_DIR>/scripts/board_registry.py" status` prints `url`, `work_dir`, `built_sha`, `current_sha` and `refresh_args`. Set `WORK_DIR` to its `work_dir`. If no board is recorded, run the normal workflow instead.
+2. **Re-parse the same PR or range into the same work dir**, keeping the old manifest for the carry-over:
+   ```bash
+   cp "$WORK_DIR/diff-manifest.json" "$WORK_DIR/diff-manifest.prev.json"
+   python3 "<SKILL_DIR>/scripts/parse_diff.py" <refresh_args from status> --out-dir "$WORK_DIR"
+   ```
+3. **Carry the plan over to the new diff** (renumbered hunks, shifted lines, moved highlights):
+   ```bash
+   python3 "<SKILL_DIR>/scripts/refresh_plan.py" \
+     --old-manifest "$WORK_DIR/diff-manifest.prev.json" --new-manifest "$WORK_DIR/diff-manifest.json" \
+     --plan "$WORK_DIR/plan.json" --out "$WORK_DIR/plan.json"
+   ```
+   Its report lists what you still own: **unclaimed new hunks** (place each in the right step, a new step, or `mechanical`), **steps to re-read** (update their sentence, points, tables, highlights and screenshots to match the new code), **empty steps** (delete them or give them lines) and dropped highlights. Also re-check `overview.footprint`, `overview.ship_facts` and `this_pr_part`. Link any new prose to existing concepts with `[[concept-id|phrase]]`; write a new concept only for a genuinely new term.
+4. **Build** exactly as in Step 6 until `✓ Verified 100% diff coverage`.
+5. **Republish to the same URL:** read the board with the `Artifact` tool (`action: "read"`, `url`), then publish the new HTML with that `url` so every link to it (PR description, Slack) keeps working.
+6. **Record the new commit:** `python3 "<SKILL_DIR>/scripts/board_registry.py" record --work-dir "$WORK_DIR" --url "<same-url>"`.
+7. Tell the user in one line that the board was refreshed, what changed in it, and its link.

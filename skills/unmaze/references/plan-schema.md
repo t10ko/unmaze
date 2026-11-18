@@ -1,13 +1,16 @@
-# `plan.json` Schema Reference (v0.6)
+# `plan.json` Schema Reference (v0.8)
 
 `build_artifact.py` merges `diff-manifest.json` with `plan.json` to compile the Arc-sidebar review guide, cumulative timeline file states, semantic concept modals, and annotated UI/Figma screenshots.
 
 **Hard invariants & core writing rules:**
 1. **Super Casual Teammate Tone Across the Whole Board:** Every text field in `plan.json` (`overview`, `chapters`, `steps`, `points`, `table`, `diff_highlights`, `visuals[*].caption`, `concepts`, `callouts`, `mechanical`) MUST be written **super casually** in short, simple everyday English—like a teammate walking you through the PR on Slack (`we`, `you`, contractions like `we're`, `don't`, `it's`, zero stiff spec prose or AI jargon).
-2. **Big-Picture Overview First (`overview.whole_task` + `overview.visuals` + optional `overview.this_pr_part`):**
+2. **Overview = Whole Task in One Breath, Then Everything About THIS PR** (render order: `links` → `whole_task` → "This PR" block → hero screenshot → before/after → terms → chapters):
+   - `overview.links` (optional): `[{"kind": "ticket" | "design" | "spec" | "docs" | "other", "label", "url"}]`, ≤ 6, absolute http(s) URLs only. Figma URLs on screenshots are added as design links automatically.
    - `overview.whole_task` (required; `tldr` accepted as alias): 1–2 short, super casual sentences explaining **the whole task** (the big picture, even if it spans multiple PRs).
-   - `overview.visuals`: Put big-picture red-marked screenshot(s) right on `Overview` whenever UI visuals apply so the reviewer immediately sees what the feature looks like.
    - `overview.this_pr_part` (optional): Include **only** when this PR builds one slice of a bigger task, casually stating what part we built here. Omit completely when this PR implements the whole task!
+   - `overview.footprint` (optional, recommended): `[{"path", "label", "change", "entry_points"}]`—one row per deployable unit (service, app, package, main module). `path` is a folder/file prefix that must match changed files; uncovered files are grouped automatically (`apps/<x>`, `packages/<x>`, `services/<x>`, ... else top-level folder, else `(repo root)`).
+   - `overview.ship_facts` (**required**, exit code `2` when missing): every key answered with a short sentence, `"none"`, or `"unknown"`—`schema_migrations`, `data_backfills`, `config_and_secrets`, `feature_flags`, `dependencies`, `api_contracts`, `deploy_order`.
+   - `overview.visuals`: **1 hero** red-marked screenshot of the whole feature (max 3, exit code `2` above that). Never repeat a screenshot a step already shows.
 3. **Mandatory Two-Sweep Concept Pipeline (`concept_candidates_extracted: true` & `concept_sweep_completed: true`, exit code `2` on violation):**
    - **Sweep 1 (`concept_sweep.py dump-prose` -> `save-candidates`):** A cold prose-only reader extracts candidate terms from the written text and marks `"keep": true` (real task-introduced or repo concepts) vs. `"keep": false` (generic tech noise).
    - **Sweep 2 (`concept_sweep.py apply`):** A repo-grounded pass looks up the actual code/diff for **only** the `keep: true` concepts, writes short casual explanations (`"origin": "introduced" | "existing"`), and semantically wraps `[[concept-id|natural phrase]]` across `prose_slots`.
@@ -26,7 +29,34 @@
   "title": "PR #142: Idempotent Webhook Ingestion",
   "overview": {
     "whole_task": "We're making Stripe and GitHub webhooks safe against retries and showing live dedup status in the Payments Admin Console so support can spot skipped duplicates.",
+    "links": [
+      { "kind": "ticket", "label": "PAY-412", "url": "https://linear.app/acme/issue/PAY-412" },
+      { "kind": "spec", "label": "Webhook dedup spec", "url": "https://github.com/acme/payments/blob/main/docs/webhook-dedup.md" }
+    ],
     "this_pr_part": "This PR ships the backend part: the Postgres lock table and `/webhooks/:provider` guard—the Admin Console retry button comes in the next PR.",
+    "footprint": [
+      {
+        "path": "services/idempotency",
+        "label": "Idempotency store",
+        "change": "New Postgres lock store that claims, finishes and frees one webhook event at a time.",
+        "entry_points": ["claimOrSkip()", "markCompleted()", "releaseClaim()"]
+      },
+      {
+        "path": "api/routes/webhooks.ts",
+        "label": "Webhook route",
+        "change": "`/webhooks/:provider` checks the lock before it calls `WebhookDispatcher`.",
+        "entry_points": ["POST /webhooks/:provider"]
+      }
+    ],
+    "ship_facts": {
+      "schema_migrations": "Adds the `webhook_idempotency_keys` table, so run the migration before the new API rolls out.",
+      "data_backfills": "none",
+      "config_and_secrets": "none",
+      "feature_flags": "none",
+      "dependencies": "none",
+      "api_contracts": "`/webhooks/:provider` now answers duplicates with `200 deduplicated` instead of running them again.",
+      "deploy_order": "Migration first, then the API; old pods ignore the new table, so rolling back is safe."
+    },
     "before_state": "If Stripe retried a webhook, we just ran `WebhookDispatcher` again and could double-charge a customer.",
     "after_state": "Now `webhookRouter` locks `(provider, event_id)` in `PostgresIdempotencyStore` first and replies `200 OK` right away on duplicates.",
     "visuals": [
@@ -205,12 +235,16 @@
    - Matching backticked terms (`` `WebhookDispatcher` ``) or explicit `[[concept-id|Text]]` markers anywhere in `overview` or `steps` automatically turn into clickable modal triggers.
 4. **Rotated Visual Containers (`table`, `points`, `visuals`, `callouts`):**
    - Keep `explanation` to **1 simple sentence**. Rotate `table` (`<= 5` rows) and `points` (`<= 5` bold-anchored 1-sentence bullets) so no step is a wall of prose.
-5. **Red-Marked Visual Annotation Coordinates (`0..100` percentages of image width & height):**
+5. **Smart Screenshot Grouping (automatic):**
+   - 3+ screenshots in one `visuals[]` block render as a **gallery**: one large image, a captioned thumbnail strip, previous/next buttons and arrow keys. Give each a 2–4 word `"label"` for its thumbnail (falls back to the first red-mark label).
+   - `"role": "before"` + `"role": "after"` on two screenshots renders them **side by side**, outside any gallery.
+   - Every screenshot is capped at ~70% of the window height; **Zoom** opens the full size.
+6. **Red-Marked Visual Annotation Coordinates (`0..100` percentages of image width & height):**
    - `{"kind": "circle", "x": 86.2, "y": 42.7, "r": 7.0, "label": "Short label"}` (or `"rx"` & `"ry"` for ellipses)
    - `{"kind": "arrow", "from_x": 60.0, "from_y": 29.0, "to_x": 77.2, "to_y": 41.0, "label": "Short label"}`
    - `{"kind": "box", "x": 12.0, "y": 30.0, "w": 40.0, "h": 18.0, "label": "Short label"}`
    - Always inspect the screenshot with `Read` before writing coordinates so every red mark lands accurately on the target UI element.
-6. **Interactive Diff-Block Highlights (`diff_highlights[]`, optional on dense/large diffs):**
+7. **Interactive Diff-Block Highlights (`diff_highlights[]`, optional on dense/large diffs):**
    - Use ONLY on large new files or dense functions (`>= 20` lines or tricky branching/SQL). Skip trivial/short hunks!
    - Capped at **<= 5 non-overlapping blocks per hunk card** (`build_artifact.py` fails with exit code `2` if `> 5` or overlapping).
    - Format: `{"hunk_id": "H007", "lines": "14-29", "title": "2-4 word label", "explanation": "1-2 simple sentences"}`. Hovering tints those lines across green/red/gray rows; clicking opens a side-margin explanation card without covering code.
