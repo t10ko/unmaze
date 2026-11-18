@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.9.0"
+  version: "0.10.0"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
@@ -92,6 +92,12 @@ A reviewer must be able to answer **"what does this PR touch, and what could bre
 - **`overview.whole_task` (Required):** **1–2 short, super casual sentences** on the whole task—the big picture of what we're building or fixing overall (even if it spans multiple PRs). Don't spend more words on it than on this PR.
 - **`overview.this_pr_part` (Only when this PR is one slice of a bigger task):** 1 short sentence on **what we built in this PR** and what comes separately. Omit it when this PR ships the whole task.
 - **`overview.footprint` (Recommended):** `[{"path": "apps/analytics", "label": "Analytics service", "change": "1 sentence on what changed there", "entry_points": ["GET /api/v1/.../resilience"]}]`—one entry per **deployable unit** (service, app, package, or main module folder in a single-app repo). `path` is a folder or file prefix; files it doesn't cover are grouped automatically by `apps/<x>`, `packages/<x>`, `services/<x>`, ... or their top-level folder, so **every changed file always shows up**. List new or changed routes, jobs, events, commands or public functions in `entry_points` (≤ 5).
+- **`overview.diagram` — "How the parts connect" (only when it earns its place, compiler-enforced):** A picture helps only when the hard part of the PR is **how parts call each other**; on most PRs it just repeats the footprint table. Decide like this:
+  1. **Draw it** when **3+ parts** are in play and **2+ calls between them are new, changed or removed**, or when a **new or changed asynchronous link** (job, queue, event, webhook) connects two parts (`"async": true`).
+  2. **Skip it** when changes stay inside one part, when only one call is new (a sentence in the footprint says it better), or when it would need more than 6 parts or 8 calls. When the PR changes code in 3+ parts, say why in one sentence with `overview.no_diagram_reason` (not shown to readers); the build fails until you either draw it or give the reason.
+  3. **Format:** `{"nodes": [{"id", "label", "note", "status": "new" | "changed" | "unchanged" | "planned"}], "edges": [{"from", "to", "label", "status": "new" | "changed" | "removed" | "unchanged" | "planned", "evidence": "path/to/file.py:42", "async": false}]}`. Show only the parts this PR touches plus what they directly call (never the whole system); `label` names the real call (route, event, job, function); `note` is ≤ 4 words.
+  4. **Grounding:** every `new`, `changed` or `removed` call needs `evidence`—a file this PR changes plus the line that makes (or used to make) the call. Unverifiable arrows don't go in.
+  5. **Look:** one picture with changes marked on it, like a unified diff—new parts and calls green, changed amber, unchanged gray, removed red and dashed, not-built-yet dashed—plus a list of every call linking to its exact line. When every part is new, it renders as a plain diagram with no change colors. The Markdown summary gets the same picture as a Mermaid block, which GitHub renders.
 - **`overview.ship_facts` (Required, compiler-enforced):** answer **every** key with one short sentence, `"none"`, or `"unknown"`: `schema_migrations`, `data_backfills`, `config_and_secrets`, `feature_flags`, `dependencies`, `api_contracts`, `deploy_order`. "None" is useful information—say it out loud. Real answers render first; "none" answers collapse into one muted line. Pull these from the diff (migration files, flag checks, env reads, lockfiles, route/schema changes) and from the PR body's rollout or blast-radius notes.
 - **`overview.visuals` (One Hero Screenshot, max 3):** One red-marked screenshot of the whole feature, with marks on the parts **this PR** feeds. Step-specific crops belong in their steps—**never repeat in the Overview a screenshot a step already shows**. `build_artifact.py` rejects more than 3.
 - **`overview.before_state` & `overview.after_state`:** 1 short, casual sentence each showing life before vs. after.
@@ -175,7 +181,7 @@ python3 "<SKILL_DIR>/scripts/build_artifact.py" \
   --markdown-out "$WORK_DIR/unmaze-review.md"
 ```
 
-If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, too many steps for the step budget, missing ship facts, missing red-marked screenshots, skipped Sweep 1/Sweep 2, or schema error), fix the reported issue and re-run until `✓ Verified 100% diff coverage` succeeds.
+If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, too many steps for the step budget, missing ship facts, a missing diagram decision or an ungrounded/unneeded diagram, missing red-marked screenshots, skipped Sweep 1/Sweep 2, or schema error), fix the reported issue and re-run until `✓ Verified 100% diff coverage` succeeds.
 
 ---
 

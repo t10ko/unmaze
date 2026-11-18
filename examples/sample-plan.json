@@ -40,6 +40,69 @@
         "change": "Adds the `webhook_idempotency_keys` table."
       }
     ],
+    "diagram": {
+      "nodes": [
+        {
+          "id": "providers",
+          "label": "Stripe and GitHub",
+          "note": "send webhooks",
+          "status": "unchanged"
+        },
+        {
+          "id": "route",
+          "label": "Webhook route",
+          "note": "checks the lock first",
+          "status": "changed"
+        },
+        {
+          "id": "store",
+          "label": "Idempotency store",
+          "note": "claims each event once",
+          "status": "new"
+        },
+        {
+          "id": "table",
+          "label": "Lock table",
+          "note": "webhook_idempotency_keys",
+          "status": "new"
+        },
+        {
+          "id": "dispatcher",
+          "label": "WebhookDispatcher",
+          "note": "billing and repo sync",
+          "status": "unchanged"
+        }
+      ],
+      "edges": [
+        {
+          "from": "providers",
+          "to": "route",
+          "status": "unchanged",
+          "label": "POST /webhooks/:provider"
+        },
+        {
+          "from": "route",
+          "to": "store",
+          "status": "new",
+          "label": "claimOrSkip()",
+          "evidence": "api/routes/webhooks.ts:24"
+        },
+        {
+          "from": "store",
+          "to": "table",
+          "status": "new",
+          "label": "INSERT ... ON CONFLICT",
+          "evidence": "services/idempotency/store.ts:16"
+        },
+        {
+          "from": "route",
+          "to": "dispatcher",
+          "status": "changed",
+          "label": "dispatch() only after a won claim",
+          "evidence": "api/routes/webhooks.ts:30"
+        }
+      ]
+    },
     "ship_facts": {
       "schema_migrations": "Adds the `webhook_idempotency_keys` table, so run the migration before the new API rolls out.",
       "data_backfills": "none",

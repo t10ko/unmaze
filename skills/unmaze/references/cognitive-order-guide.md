@@ -28,6 +28,7 @@ A PR is often one piece of a bigger task. Reviewers need the big picture, but th
 - **Links first (`overview.links`):** the main ticket, the design file and the spec as pills under the title, whenever they exist.
 - **Whole task in 1–2 sentences (`overview.whole_task`):** the overall product or engineering goal, in simple casual English. Never longer than the "This PR" part.
 - **"This PR" block right under it:** `this_pr_part` (only for a partial slice), the **change footprint** (`overview.footprint`: every deployable unit touched, with new or changed entry points) and the **ship facts** (`overview.ship_facts`: migrations, backfills, config, flags, dependencies, contract changes, deploy order—"none" said out loud).
+- **A "How the parts connect" diagram only when it earns its place (`overview.diagram`):** draw it when 3+ parts are in play and 2+ calls between them are new, changed or removed (or a new job/queue/event links them); otherwise skip it and give `no_diagram_reason`. It's one picture with changes marked like a unified diff (plain when everything is new), and every changed arrow points at the line that makes the call.
 - **One hero screenshot (`overview.visuals`):** the whole feature with red marks on what this PR feeds. Step-specific crops stay in their steps; never show the same screenshot twice.
 
 ## 3. Split Multi-Concern Diffs Into Ordered Chapters (`chapters[]`)

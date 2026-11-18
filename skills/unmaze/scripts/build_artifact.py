@@ -91,6 +91,19 @@ MAX_STEPS_PER_CHAPTER = 5
 DOC_FILE_SUFFIXES = (".md", ".mdx", ".rst", ".adoc")
 DOC_DIR_NAMES = {"docs", "doc", "adr", "adrs", "rfcs"}
 
+# "How the parts connect" diagram: drawn only when the hard part of the PR is how parts call
+# each other. Nodes are parts (services, apps, packages, modules, queues, tables, screens).
+DIAGRAM_NODE_STATUSES = {"new", "changed", "unchanged", "planned"}
+DIAGRAM_EDGE_STATUSES = {"new", "changed", "removed", "unchanged", "planned"}
+DIAGRAM_CHANGE_EDGE_STATUSES = {"new", "changed", "removed"}
+DIAGRAM_MAX_NODES = 6
+DIAGRAM_MAX_EDGES = 8
+DIAGRAM_MIN_REAL_NODES = 3
+DIAGRAM_MIN_CHANGED_EDGES = 2
+# PRs that change this many code parts must decide explicitly: draw a diagram or say why not.
+DIAGRAM_DECISION_MIN_PARTS = 3
+EVIDENCE_RE = re.compile(r"^(?P<path>[^:\s]+)(?::L?(?P<line>\d+))?$")
+
 HUNK_SPEC_RE = re.compile(r"^(H\d{3,})(?::([\d,\-\s]+))?$")
 
 
@@ -1330,6 +1343,279 @@ def render_ship_facts_html(facts: list[dict[str, str]], concept_lookup: dict[str
     )
 
 
+DIAGRAM_STATUS_LABELS = {
+    "new": "new",
+    "changed": "changed",
+    "unchanged": "unchanged",
+    "removed": "removed",
+    "planned": "not built yet",
+}
+
+
+def layout_diagram(diagram: dict[str, Any]) -> dict[str, Any]:
+    """Left-to-right layered layout: columns by call depth, edges routed orthogonally in the gaps."""
+    nodes = diagram["nodes"]
+    edges = diagram["edges"]
+    ids = [n["id"] for n in nodes]
+    n_count = len(ids)
+
+    # 1. Find back edges (calls that close a loop) with a DFS, so loops can't stretch the columns.
+    adjacency: dict[str, list[int]] = {nid: [] for nid in ids}
+    for i, e in enumerate(edges):
+        adjacency[e["from"]].append(i)
+    back_edges: set[int] = set()
+    state: dict[str, int] = {}
+
+    def visit(nid: str) -> None:
+        state[nid] = 1
+        for i in adjacency[nid]:
+            nxt = edges[i]["to"]
+            if state.get(nxt) == 1:
+                back_edges.add(i)
+            elif nxt not in state:
+                visit(nxt)
+        state[nid] = 2
+
+    incoming = {e["to"] for e in edges if e["from"] != e["to"]}
+    for nid in [n for n in ids if n not in incoming] + ids:
+        if nid not in state:
+            visit(nid)
+
+    # 2. Column = longest call depth from a source, using only loop-free edges.
+    layer = {nid: 0 for nid in ids}
+    for _ in range(n_count):
+        for i, e in enumerate(edges):
+            if i in back_edges or e["from"] == e["to"]:
+                continue
+            want = min(layer[e["from"]] + 1, n_count - 1)
+            if layer[e["to"]] < want:
+                layer[e["to"]] = want
+    used_layers = sorted(set(layer.values()))
+    layer = {nid: used_layers.index(v) for nid, v in layer.items()}
+    columns: list[list[str]] = [[] for _ in used_layers]
+    for nid in ids:
+        columns[layer[nid]].append(nid)
+
+    # 3. Order each column by the average row of its callers (one barycenter pass).
+    row_of = {nid: i for col in columns for i, nid in enumerate(col)}
+    for c_idx in range(1, len(columns)):
+        def bary(nid: str) -> float:
+            srcs = [row_of[e["from"]] for e in edges if e["to"] == nid and layer[e["from"]] < c_idx]
+            return sum(srcs) / len(srcs) if srcs else float(row_of[nid])
+        columns[c_idx].sort(key=bary)
+        for i, nid in enumerate(columns[c_idx]):
+            row_of[nid] = i
+
+    # 4. Box sizes from text length; columns share the widest box.
+    by_id = {n["id"]: n for n in nodes}
+    size: dict[str, tuple[float, float]] = {}
+    for n in nodes:
+        w = max(len(n["label"]) * 7.8, len(n["note"]) * 6.6) + 28
+        size[n["id"]] = (max(124.0, min(230.0, w)), 54.0 if n["note"] else 40.0)
+    margin, col_gap, row_gap = 16.0, 76.0, 22.0
+    col_w = [max(size[nid][0] for nid in col) for col in columns]
+    col_h = [sum(size[nid][1] for nid in col) + row_gap * (len(col) - 1) for col in columns]
+    body_h = max(col_h)
+    pos: dict[str, tuple[float, float, float, float]] = {}
+    x = margin
+    for c_idx, col in enumerate(columns):
+        y = margin + (body_h - col_h[c_idx]) / 2
+        for nid in col:
+            w, h = size[nid]
+            pos[nid] = (x + (col_w[c_idx] - w) / 2, y, w, h)
+            y += h + row_gap
+        x += col_w[c_idx] + col_gap
+    width = x - col_gap + margin
+    bottom = margin + body_h
+
+    # 5. Spread several arrows leaving (or entering) one box over its height.
+    def spread(count: int, h: float) -> list[float]:
+        if count <= 1:
+            return [h / 2]
+        step = min(14.0, (h - 16) / (count - 1))
+        mid = h / 2
+        return [mid + (i - (count - 1) / 2) * step for i in range(count)]
+
+    forward = {i for i, e in enumerate(edges) if layer[e["to"]] > layer[e["from"]]}
+    out_slots: dict[int, float] = {}
+    in_slots: dict[int, float] = {}
+    for nid in ids:
+        outs = sorted((i for i, e in enumerate(edges) if i in forward and e["from"] == nid), key=lambda i: pos[edges[i]["to"]][1])
+        for k, y_off in zip(outs, spread(len(outs), pos[nid][3])):
+            out_slots[k] = pos[nid][1] + y_off
+        ins = sorted((i for i, e in enumerate(edges) if i in forward and e["to"] == nid), key=lambda i: pos[edges[i]["from"]][1])
+        for k, y_off in zip(ins, spread(len(ins), pos[nid][3])):
+            in_slots[k] = pos[nid][1] + y_off
+
+    # Vertical segments in the same gap get their own x so they never overlap.
+    gap_users: dict[int, list[int]] = {}
+    for i, e in enumerate(edges):
+        if i in forward:
+            gap_users.setdefault(layer[e["to"]] - 1, []).append(i)
+    lane = 0
+    paths: list[dict[str, Any]] = []
+    for i, e in enumerate(edges):
+        sx, sy, sw, sh = pos[e["from"]]
+        tx, ty, tw, th = pos[e["to"]]
+        if i in forward:
+            users = gap_users[layer[e["to"]] - 1]
+            j = users.index(i)
+            gap_left = tx - col_gap
+            xm = gap_left + col_gap / 2 + (j - (len(users) - 1) / 2) * 9
+            y1, y2 = out_slots[i], in_slots[i]
+            x1, x2 = sx + sw, tx - 3
+            if layer[e["to"]] - layer[e["from"]] == 1:
+                d = f"M{x1:.1f} {y1:.1f} L{xm:.1f} {y1:.1f} L{xm:.1f} {y2:.1f} L{x2:.1f} {y2:.1f}"
+            else:
+                lane_y = bottom + 14 + lane * 12
+                lane += 1
+                xa = sx + sw + col_gap / 2
+                d = (
+                    f"M{x1:.1f} {y1:.1f} L{xa:.1f} {y1:.1f} L{xa:.1f} {lane_y:.1f} "
+                    f"L{xm:.1f} {lane_y:.1f} L{xm:.1f} {y2:.1f} L{x2:.1f} {y2:.1f}"
+                )
+        else:
+            lane_y = bottom + 14 + lane * 12
+            lane += 1
+            x1, x2 = sx + sw / 2, tx + tw / 2 + (8 if e["from"] == e["to"] else 0)
+            d = f"M{x1:.1f} {sy + sh:.1f} L{x1:.1f} {lane_y:.1f} L{x2:.1f} {lane_y:.1f} L{x2:.1f} {ty + th + 3:.1f}"
+        paths.append({"edge": e, "d": d})
+    height = bottom + margin + (lane * 12 + 8 if lane else 0)
+    return {"pos": pos, "paths": paths, "width": width, "height": height, "by_id": by_id}
+
+
+def _evidence_link(evidence: dict[str, Any] | None, status: str, manifest: dict[str, Any]) -> str | None:
+    if not evidence or not evidence.get("line"):
+        return None
+    hunk = next((h for h in manifest.get("hunks", []) if h["file_path"] == evidence["path"]), None)
+    if not hunk:
+        return None
+    line = int(evidence["line"])
+    if status == "removed":
+        return compute_row_pr_url(hunk.get("deep_link"), pr_old_line=line, pr_new_line=None, prefer_side="left")
+    return compute_row_pr_url(hunk.get("deep_link"), pr_old_line=None, pr_new_line=line)
+
+
+def render_diagram_html(diagram: dict[str, Any] | None, manifest: dict[str, Any]) -> str:
+    """Render the 'How the parts connect' SVG plus a readable list of every call it draws."""
+    if not diagram or not diagram.get("nodes"):
+        return ""
+    lay = layout_diagram(diagram)
+    mode = diagram["mode"]
+    shapes: list[str] = []
+    for n in diagram["nodes"]:
+        x, y, w, h = lay["pos"][n["id"]]
+        status = n["status"] if mode == "diff" or n["status"] == "planned" else "plain"
+        cx = x + w / 2
+        title_y = y + (h / 2 - 8 if n["note"] else h / 2)
+        shapes.append(
+            f'<g class="dg-node dg-node-{status}">'
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="8"/>'
+            f'<text class="dg-title" x="{cx:.1f}" y="{title_y:.1f}" text-anchor="middle" dominant-baseline="central">{esc(n["label"])}</text>'
+            + (
+                f'<text class="dg-note" x="{cx:.1f}" y="{y + h / 2 + 9:.1f}" text-anchor="middle" dominant-baseline="central">{esc(n["note"])}</text>'
+                if n["note"]
+                else ""
+            )
+            + "</g>"
+        )
+    lines: list[str] = []
+    for item in lay["paths"]:
+        e = item["edge"]
+        status = e["status"] if mode == "diff" or e["status"] == "planned" else "plain"
+        lines.append(
+            f'<path class="dg-edge dg-edge-{status}" d="{item["d"]}" fill="none" marker-end="url(#dg-arrow-{status})"/>'
+        )
+    markers = "".join(
+        f'<marker id="dg-arrow-{st}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
+        f'<path class="dg-head dg-head-{st}" d="M1 1L9 5L1 9z"/></marker>'
+        for st in ("new", "changed", "removed", "unchanged", "planned", "plain")
+    )
+    by_id = lay["by_id"]
+    summary = "; ".join(
+        f'{by_id[e["from"]]["label"]} to {by_id[e["to"]]["label"]} ({DIAGRAM_STATUS_LABELS[e["status"]]}): {e["label"]}'
+        for e in diagram["edges"]
+    )
+    svg = (
+        f'<svg class="dg-svg" viewBox="0 0 {lay["width"]:.0f} {lay["height"]:.0f}" '
+        f'style="max-width: {lay["width"]:.0f}px" role="img" aria-labelledby="dg-title dg-desc">'
+        f'<title id="dg-title">How the parts connect</title><desc id="dg-desc">{esc(summary)}</desc>'
+        f"<defs>{markers}</defs>{''.join(lines)}{''.join(shapes)}</svg>"
+    )
+
+    legend = ""
+    if mode == "diff":
+        present = {n["status"] for n in diagram["nodes"]} | {e["status"] for e in diagram["edges"]}
+        chips = "".join(
+            f'<span class="dg-key dg-key-{st}"><span class="dg-swatch"></span>{esc(DIAGRAM_STATUS_LABELS[st])}</span>'
+            for st in ("new", "changed", "removed", "unchanged", "planned")
+            if st in present
+        )
+        legend = f'<div class="dg-legend" aria-label="Diagram key">{chips}</div>'
+
+    calls: list[str] = []
+    for e in diagram["edges"]:
+        ev = e.get("evidence")
+        ev_txt = f'{ev["path"]}:{ev["line"]}' if ev and ev.get("line") else (ev["path"] if ev else "")
+        link = _evidence_link(ev, e["status"], manifest)
+        ev_html = (
+            f'<a class="dg-evidence" href="{esc(link)}" target="_blank" rel="noopener noreferrer">{esc(ev_txt)} ↗</a>'
+            if link
+            else (f'<code class="dg-evidence">{esc(ev_txt)}</code>' if ev_txt else "")
+        )
+        badge = (
+            f'<span class="dg-badge dg-badge-{e["status"]}">{esc(DIAGRAM_STATUS_LABELS[e["status"]])}</span>'
+            if mode == "diff" or e["status"] == "planned"
+            else ""
+        )
+        label_cls = "dg-call-label is-removed" if e["status"] == "removed" else "dg-call-label"
+        calls.append(
+            f'<li class="dg-call">{badge}<span class="dg-call-path">{esc(by_id[e["from"]]["label"])} → '
+            f'{esc(by_id[e["to"]]["label"])}</span><code class="{label_cls}">{esc(e["label"])}</code>{ev_html}</li>'
+        )
+    return (
+        f'<div class="this-pr-section dg-block">'
+        f'<h3 class="block-heading">How the parts connect</h3>'
+        f'<div class="dg-canvas">{svg}</div>{legend}'
+        f'<ul class="dg-calls">{"".join(calls)}</ul></div>'
+    )
+
+
+def render_diagram_mermaid(diagram: dict[str, Any] | None) -> list[str]:
+    """Mermaid flowchart for the Markdown summary (GitHub renders it in PR descriptions)."""
+    if not diagram or not diagram.get("nodes"):
+        return []
+
+    def q(text: str) -> str:
+        return re.sub(r"[\"<>`|\[\]{}]", "", text)
+
+    out = ["```mermaid", "flowchart LR"]
+    for n in diagram["nodes"]:
+        note = f"<br/>{q(n['note'])}" if n["note"] else ""
+        out.append(f'  {q(n["id"]).replace(" ", "_")}["{q(n["label"])}{note}"]')
+    arrow = {"removed": "-.->", "planned": "-.->"}
+    for e in diagram["edges"]:
+        status_txt = "" if diagram["mode"] == "plain" else f"{DIAGRAM_STATUS_LABELS[e['status']]}: "
+        out.append(
+            f'  {q(e["from"]).replace(" ", "_")} {arrow.get(e["status"], "-->")}|"{status_txt}{q(e["label"])}"| '
+            f'{q(e["to"]).replace(" ", "_")}'
+        )
+    if diagram["mode"] == "diff":
+        out.extend(
+            [
+                "  classDef new fill:#e6ffec,stroke:#1a7f37,color:#1a7f37",
+                "  classDef changed fill:#fff8c5,stroke:#9a6700,color:#9a6700",
+                "  classDef planned stroke-dasharray:4 4",
+            ]
+        )
+        for st in ("new", "changed", "planned"):
+            ids = [q(n["id"]).replace(" ", "_") for n in diagram["nodes"] if n["status"] == st]
+            if ids:
+                out.append(f"  class {','.join(ids)} {st}")
+    out.append("```")
+    return out
+
+
 def render_this_pr_block_html(
     overview: dict[str, Any], footprint_rows: list[dict[str, Any]], concept_lookup: dict[str, str]
 ) -> str:
@@ -1341,6 +1627,7 @@ def render_this_pr_block_html(
         f'<span class="pr-part-badge">{esc(badge)}</span>'
         f"{lead_html}"
         f"{render_footprint_html(footprint_rows, concept_lookup)}"
+        f"{overview.get('_diagram_html') or ''}"
         f"{render_ship_facts_html(overview.get('_ship_facts') or [], concept_lookup)}"
         f"</div>"
     )
@@ -1697,6 +1984,153 @@ def _check_step_budget(
     )
 
 
+def _validate_diagram(raw: Any, manifest: dict[str, Any], errors: list[str]) -> dict[str, Any] | None:
+    """Validate `overview.diagram` and enforce the 'is a picture worth it?' gate."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        errors.append("`overview.diagram` must be an object with `nodes` and `edges`.")
+        return None
+    raw_nodes = raw.get("nodes")
+    raw_edges = raw.get("edges")
+    if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
+        errors.append("`overview.diagram` needs `nodes` and `edges` arrays.")
+        return None
+    if len(raw_nodes) > DIAGRAM_MAX_NODES or len(raw_edges) > DIAGRAM_MAX_EDGES:
+        errors.append(
+            f"Diagram Size Check FAILED — {len(raw_nodes)} parts and {len(raw_edges)} calls "
+            f"(max {DIAGRAM_MAX_NODES} parts, {DIAGRAM_MAX_EDGES} calls). Keep only the parts this PR touches "
+            f"plus what they directly call; if it still doesn't fit, drop the diagram and set "
+            f"`overview.no_diagram_reason`—the footprint table reads better than a crowded picture."
+        )
+    file_paths = {f["path"] for f in manifest.get("files", [])}
+    nodes: list[dict[str, str]] = []
+    node_ids: set[str] = set()
+    for n_idx, item in enumerate(raw_nodes):
+        if not isinstance(item, dict):
+            errors.append(f"`overview.diagram.nodes[{n_idx}]` must be an object.")
+            continue
+        nid = str(item.get("id") or "").strip()
+        label = str(item.get("label") or "").strip()
+        status = str(item.get("status") or "").strip().lower()
+        if not nid or not label:
+            errors.append(f"`overview.diagram.nodes[{n_idx}]` needs an `id` and a short `label`.")
+            continue
+        if nid in node_ids:
+            errors.append(f"`overview.diagram` lists part `{nid}` twice.")
+            continue
+        if status not in DIAGRAM_NODE_STATUSES:
+            errors.append(
+                f"`overview.diagram.nodes[{n_idx}].status` must be one of: {', '.join(sorted(DIAGRAM_NODE_STATUSES))}."
+            )
+            continue
+        node_ids.add(nid)
+        nodes.append({"id": nid, "label": label[:32], "note": str(item.get("note") or "").strip()[:30], "status": status})
+
+    edges: list[dict[str, Any]] = []
+    for e_idx, item in enumerate(raw_edges):
+        if not isinstance(item, dict):
+            errors.append(f"`overview.diagram.edges[{e_idx}]` must be an object.")
+            continue
+        src = str(item.get("from") or "").strip()
+        dst = str(item.get("to") or "").strip()
+        status = str(item.get("status") or "").strip().lower()
+        label = str(item.get("label") or "").strip()
+        if src not in node_ids or dst not in node_ids:
+            errors.append(f"`overview.diagram.edges[{e_idx}]` must connect two listed parts (`from`, `to`).")
+            continue
+        if status not in DIAGRAM_EDGE_STATUSES:
+            errors.append(
+                f"`overview.diagram.edges[{e_idx}].status` must be one of: {', '.join(sorted(DIAGRAM_EDGE_STATUSES))}."
+            )
+            continue
+        if not label:
+            errors.append(f"`overview.diagram.edges[{e_idx}].label` must name the call (route, event, job or function).")
+            continue
+        evidence_raw = str(item.get("evidence") or "").strip()
+        evidence: dict[str, Any] | None = None
+        if evidence_raw:
+            m = EVIDENCE_RE.match(evidence_raw)
+            if not m:
+                errors.append(
+                    f"`overview.diagram.edges[{e_idx}].evidence` must look like `path/to/file.py:42`."
+                )
+                continue
+            evidence = {"path": m.group("path"), "line": int(m.group("line")) if m.group("line") else None}
+        if status in DIAGRAM_CHANGE_EDGE_STATUSES:
+            if not evidence:
+                errors.append(
+                    f"Diagram Grounding Check FAILED — call `{src} → {dst}` ({status}) has no `evidence`. "
+                    f"Point it at the changed file and line that makes or removes the call, or drop the arrow."
+                )
+                continue
+            if evidence["path"] not in file_paths:
+                errors.append(
+                    f"Diagram Grounding Check FAILED — evidence `{evidence_raw}` for `{src} → {dst}` is not a file "
+                    f"this PR changes. New, changed and removed calls must point at a changed file."
+                )
+                continue
+        edges.append(
+            {
+                "from": src,
+                "to": dst,
+                "status": status,
+                "label": label[:70],
+                "async": bool(item.get("async")),
+                "evidence": evidence,
+            }
+        )
+
+    real_nodes = [n for n in nodes if n["status"] != "planned"]
+    change_edges = [e for e in edges if e["status"] in DIAGRAM_CHANGE_EDGE_STATUSES]
+    worth_it = (
+        len(real_nodes) >= DIAGRAM_MIN_REAL_NODES and len(change_edges) >= DIAGRAM_MIN_CHANGED_EDGES
+    ) or any(e["async"] for e in change_edges)
+    if nodes and not worth_it:
+        errors.append(
+            f"Diagram Worth-It Check FAILED — a picture only helps when the hard part is how parts call each other: "
+            f"draw one for {DIAGRAM_MIN_REAL_NODES}+ parts with {DIAGRAM_MIN_CHANGED_EDGES}+ new, changed or removed "
+            f"calls between them, or for a new/changed async link (`\"async\": true` job, queue, event, webhook). "
+            f"This one has {len(real_nodes)} part(s) and {len(change_edges)} such call(s): remove `overview.diagram` "
+            f"and set `overview.no_diagram_reason` instead (a sentence in the footprint says it better)."
+        )
+    mode = "plain" if real_nodes and all(n["status"] == "new" for n in real_nodes) else "diff"
+    return {"nodes": nodes, "edges": edges, "mode": mode}
+
+
+def count_code_parts(manifest: dict[str, Any], plan: dict[str, Any]) -> list[str]:
+    """Footprint parts (excluding the repo root) that contain production code changes."""
+    kind_by_path: dict[str, set[str]] = {}
+    for h in manifest.get("hunks", []):
+        kind_by_path.setdefault(h["file_path"], set()).add(hunk_review_kind(h))
+    parts: list[str] = []
+    for row in build_change_footprint(manifest, plan):
+        if row["path"] == "(repo root)":
+            continue
+        if any("code" in kind_by_path.get(fp, set()) for fp in row["files"]):
+            parts.append(row["path"])
+    return parts
+
+
+def _check_diagram_decision(manifest: dict[str, Any], plan: dict[str, Any], errors: list[str]) -> None:
+    """PRs touching several code parts must decide: draw the diagram, or say in one line why not."""
+    overview = plan.get("overview") or {}
+    if overview.get("diagram") is not None:
+        return
+    reason = str(overview.get("no_diagram_reason") or "").strip()
+    parts = count_code_parts(manifest, plan)
+    if len(parts) < DIAGRAM_DECISION_MIN_PARTS or len(reason) >= 15:
+        return
+    errors.append(
+        f"Diagram Decision Check FAILED — this PR changes code in {len(parts)} parts "
+        f"({', '.join(f'`{p}`' for p in parts[:6])}). Decide explicitly:\n"
+        f"  - Add `overview.diagram` when {DIAGRAM_MIN_CHANGED_EDGES}+ calls between these parts are new, changed "
+        f"or removed, or a new job/queue/event/webhook links them.\n"
+        f"  - Otherwise set `overview.no_diagram_reason` to one sentence (e.g. \"Each part changes on its own; "
+        f"no calls between them changed.\")."
+    )
+
+
 def validate_and_normalize_plan(
     manifest: dict[str, Any],
     plan: dict[str, Any],
@@ -1739,6 +2173,7 @@ def validate_and_normalize_plan(
     overview["_links"] = _validate_overview_links(overview.get("links"), errors)
     overview["_ship_facts"] = _validate_ship_facts(overview.get("ship_facts"), errors)
     overview["_footprint_decl"] = _validate_footprint_decl(overview.get("footprint"), manifest, errors)
+    overview["_diagram"] = _validate_diagram(overview.get("diagram"), manifest, errors)
     ov_visuals = overview.get("visuals")
     if isinstance(ov_visuals, list) and len(ov_visuals) > MAX_OVERVIEW_VISUALS:
         errors.append(
@@ -2019,6 +2454,7 @@ def validate_and_normalize_plan(
         )
 
     _check_step_budget(manifest, plan, hunk_map, errors)
+    _check_diagram_decision(manifest, plan, errors)
 
     # Enforce Mandatory Visual Grounding (even on backend PRs with a frontend consumer!)
     no_vis_reason = str(plan.get("no_visuals_justification") or "").strip()
@@ -3124,6 +3560,7 @@ def build_html_artifact(
         block_id="overview",
     )
     source_links_html = render_source_links_html(collect_overview_links(plan))
+    overview["_diagram_html"] = render_diagram_html(overview.get("_diagram"), manifest)
     this_pr_block_html = render_this_pr_block_html(
         overview, build_change_footprint(manifest, plan), concept_lookup
     )
@@ -4659,6 +5096,57 @@ def build_html_artifact(
     }}
 
     .ship-none .ship-badge {{ background: var(--subtle); color: var(--muted); border: 1px solid var(--border); }}
+
+    /* "How the parts connect" diagram: one picture with changes marked on it, like a unified diff */
+    .dg-canvas {{
+      overflow-x: auto;
+      padding: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+    }}
+    .dg-svg {{ display: block; inline-size: 100%; min-inline-size: 520px; block-size: auto; margin-inline: auto; }}
+    .dg-node rect {{ fill: var(--surface); stroke: var(--border); stroke-width: 1; }}
+    .dg-title {{ fill: var(--text); font-size: 13px; font-weight: 650; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+    .dg-note {{ fill: var(--muted); font-size: 11.5px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+    .dg-node-new rect {{ fill: var(--add-bg); stroke: var(--add-fg); }}
+    .dg-node-new .dg-title, .dg-node-new .dg-note {{ fill: var(--add-fg); }}
+    .dg-node-changed rect {{ fill: var(--warn-bg); stroke: var(--warn-fg); }}
+    .dg-node-changed .dg-title, .dg-node-changed .dg-note {{ fill: var(--warn-fg); }}
+    .dg-node-unchanged rect {{ fill: var(--subtle); stroke: var(--border); }}
+    .dg-node-planned rect {{ fill: none; stroke: var(--muted); stroke-dasharray: 4 4; }}
+    .dg-node-plain rect {{ fill: var(--surface); stroke: var(--muted); }}
+    .dg-edge {{ stroke-width: 1.6; stroke-linejoin: round; }}
+    .dg-edge-new, .dg-head-new {{ stroke: var(--add-fg); fill: none; }}
+    .dg-edge-changed, .dg-head-changed {{ stroke: var(--warn-fg); }}
+    .dg-edge-removed, .dg-head-removed {{ stroke: var(--del-fg); }}
+    .dg-edge-removed {{ stroke-dasharray: 5 4; }}
+    .dg-edge-unchanged, .dg-head-unchanged, .dg-edge-plain, .dg-head-plain {{ stroke: var(--muted); }}
+    .dg-edge-planned, .dg-head-planned {{ stroke: var(--muted); }}
+    .dg-edge-planned {{ stroke-dasharray: 4 3; }}
+    .dg-head {{ stroke: none; }}
+    .dg-head-new {{ fill: var(--add-fg); }}
+    .dg-head-changed {{ fill: var(--warn-fg); }}
+    .dg-head-removed {{ fill: var(--del-fg); }}
+    .dg-head-unchanged, .dg-head-planned, .dg-head-plain {{ fill: var(--muted); }}
+    .dg-legend {{ display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; font-size: 0.78rem; color: var(--muted); }}
+    .dg-key {{ display: inline-flex; align-items: center; gap: 0.35rem; }}
+    .dg-swatch {{ inline-size: 0.8rem; block-size: 0.8rem; border-radius: 3px; border: 1.5px solid var(--border); background: var(--subtle); }}
+    .dg-key-new .dg-swatch {{ background: var(--add-bg); border-color: var(--add-fg); }}
+    .dg-key-changed .dg-swatch {{ background: var(--warn-bg); border-color: var(--warn-fg); }}
+    .dg-key-removed .dg-swatch {{ background: transparent; border: 1.5px dashed var(--del-fg); }}
+    .dg-key-planned .dg-swatch {{ background: transparent; border: 1.5px dashed var(--muted); }}
+    .dg-calls {{ list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; font-size: 0.86rem; }}
+    .dg-call {{ display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.6rem; line-height: 1.5; }}
+    .dg-call-path {{ font-weight: 600; }}
+    .dg-call-label {{ font-size: 0.8rem; padding: 0.05rem 0.35rem; border-radius: 5px; background: var(--subtle); border: 1px solid var(--border); }}
+    .dg-call-label.is-removed {{ text-decoration: line-through; color: var(--del-fg); }}
+    .dg-evidence {{ font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.74rem; color: var(--accent); text-decoration: none; }}
+    a.dg-evidence:hover {{ text-decoration: underline; }}
+    .dg-badge {{ font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.05rem 0.4rem; border-radius: 4px; background: var(--subtle); color: var(--muted); }}
+    .dg-badge-new {{ background: var(--add-bg); color: var(--add-fg); }}
+    .dg-badge-changed {{ background: var(--warn-bg); color: var(--warn-fg); }}
+    .dg-badge-removed {{ background: var(--del-bg); color: var(--del-fg); }}
 
     .pr-part-badge {{
       display: inline-block;
@@ -6535,6 +7023,19 @@ def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> st
             size = f"{n_files} file{'s' if n_files != 1 else ''}, +{row['additions']:,} / −{row['deletions']:,}"
             safe_change = change.replace("|", r"\|")
             lines.append(f"| {part} | {safe_change} | {size} |")
+        lines.append("")
+
+    diagram = ov.get("_diagram")
+    if diagram and diagram.get("nodes"):
+        lines.extend(["## How the parts connect", ""])
+        lines.extend(render_diagram_mermaid(diagram))
+        lines.append("")
+        by_id = {n["id"]: n["label"] for n in diagram["nodes"]}
+        for e in diagram["edges"]:
+            ev = e.get("evidence")
+            ev_txt = f" (`{ev['path']}{':' + str(ev['line']) if ev.get('line') else ''}`)" if ev else ""
+            status = "" if diagram["mode"] == "plain" else f"**{DIAGRAM_STATUS_LABELS[e['status']]}** "
+            lines.append(f"- {status}{by_id[e['from']]} → {by_id[e['to']]}: `{e['label']}`{ev_txt}")
         lines.append("")
 
     facts = ov.get("_ship_facts") or []

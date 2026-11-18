@@ -9,6 +9,8 @@
    - `overview.whole_task` (required; `tldr` accepted as alias): 1–2 short, super casual sentences explaining **the whole task** (the big picture, even if it spans multiple PRs).
    - `overview.this_pr_part` (optional): Include **only** when this PR builds one slice of a bigger task, casually stating what part we built here. Omit completely when this PR implements the whole task!
    - `overview.footprint` (optional, recommended): `[{"path", "label", "change", "entry_points"}]`—one row per deployable unit (service, app, package, main module). `path` is a folder/file prefix that must match changed files; uncovered files are grouped automatically (`apps/<x>`, `packages/<x>`, `services/<x>`, ... else top-level folder, else `(repo root)`).
+   - `overview.diagram` (optional, gated): `{"nodes": [{"id", "label", "note", "status"}], "edges": [{"from", "to", "label", "status", "evidence", "async"}]}`. Node status `new | changed | unchanged | planned`; edge status `new | changed | removed | unchanged | planned`. Allowed only with 3+ real parts and 2+ new/changed/removed calls, or a new/changed `async` link; ≤ 6 parts and ≤ 8 calls; every new/changed/removed call needs `evidence` (`changed/file.py:42`). All-new parts render as a plain diagram, anything else as a change-marked diagram.
+   - `overview.no_diagram_reason` (required when the PR changes code in 3+ parts and has no diagram): one sentence on why a picture wouldn't help; never rendered.
    - `overview.ship_facts` (**required**, exit code `2` when missing): every key answered with a short sentence, `"none"`, or `"unknown"`—`schema_migrations`, `data_backfills`, `config_and_secrets`, `feature_flags`, `dependencies`, `api_contracts`, `deploy_order`.
    - `overview.visuals`: **1 hero** red-marked screenshot of the whole feature (max 3, exit code `2` above that). Never repeat a screenshot a step already shows.
 3. **Mandatory Two-Sweep Concept Pipeline (`concept_candidates_extracted: true` & `concept_sweep_completed: true`, exit code `2` on violation):**
@@ -49,6 +51,19 @@
         "entry_points": ["POST /webhooks/:provider"]
       }
     ],
+    "diagram": {
+      "nodes": [
+        { "id": "providers", "label": "Stripe and GitHub", "note": "send webhooks", "status": "unchanged" },
+        { "id": "route", "label": "Webhook route", "note": "checks the lock first", "status": "changed" },
+        { "id": "store", "label": "Idempotency store", "note": "claims each event once", "status": "new" },
+        { "id": "dispatcher", "label": "WebhookDispatcher", "note": "billing and repo sync", "status": "unchanged" }
+      ],
+      "edges": [
+        { "from": "providers", "to": "route", "status": "unchanged", "label": "POST /webhooks/:provider" },
+        { "from": "route", "to": "store", "status": "new", "label": "claimOrSkip()", "evidence": "api/routes/webhooks.ts:24" },
+        { "from": "route", "to": "dispatcher", "status": "changed", "label": "dispatch() only after a won claim", "evidence": "api/routes/webhooks.ts:30" }
+      ]
+    },
     "ship_facts": {
       "schema_migrations": "Adds the `webhook_idempotency_keys` table, so run the migration before the new API rolls out.",
       "data_backfills": "none",

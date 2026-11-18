@@ -1030,6 +1030,152 @@ class UnmazeTestSuite(unittest.TestCase):
         self.assertRegex(rendered, r"\.anchored-list \{[^}]*max-width: 64ch;[^}]*gap: 0\.75rem;")
         self.assertRegex(rendered, r"\.lead-text \{[^}]*max-width: 62ch;")
 
+    def test_diagram_decision_worth_it_and_grounding_gates(self) -> None:
+        manifest = self._build_sample_manifest()
+
+        # 1. Several code parts changed -> the plan must decide: draw it, or say why not.
+        undecided = copy.deepcopy(self.sample_plan)
+        undecided["overview"].pop("diagram")
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_dec:
+            build_artifact.validate_and_normalize_plan(manifest, undecided)
+        self.assertIn("Diagram Decision Check FAILED", str(ctx_dec.exception))
+        undecided["overview"]["no_diagram_reason"] = "Each part changes on its own; no calls between them changed."
+        validated = build_artifact.validate_and_normalize_plan(manifest, undecided)
+        rendered = build_artifact.build_html_artifact(manifest, validated, search_dirs=[REPO_ROOT / "examples"])
+        self.assertNotIn('class="this-pr-section dg-block"', rendered)
+        self.assertNotIn("no calls between them changed", rendered)
+
+        # 2. Not worth a picture: too few parts and changed calls -> rejected.
+        tiny = copy.deepcopy(self.sample_plan)
+        tiny["overview"]["diagram"] = {
+            "nodes": [
+                {"id": "route", "label": "Webhook route", "status": "changed"},
+                {"id": "store", "label": "Idempotency store", "status": "new"},
+            ],
+            "edges": [
+                {"from": "route", "to": "store", "status": "new", "label": "claimOrSkip()", "evidence": "api/routes/webhooks.ts:24"}
+            ],
+        }
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_tiny:
+            build_artifact.validate_and_normalize_plan(manifest, tiny)
+        self.assertIn("Diagram Worth-It Check FAILED", str(ctx_tiny.exception))
+        # ...unless the one new link is asynchronous (job, queue, event, webhook).
+        tiny["overview"]["diagram"]["edges"][0]["async"] = True
+        build_artifact.validate_and_normalize_plan(manifest, tiny)
+
+        # 3. Every new/changed/removed call must point at a changed file.
+        ungrounded = copy.deepcopy(self.sample_plan)
+        ungrounded["overview"]["diagram"]["edges"][1].pop("evidence")
+        ungrounded["overview"]["diagram"]["edges"][2]["evidence"] = "somewhere/else.ts:3"
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_ev:
+            build_artifact.validate_and_normalize_plan(manifest, ungrounded)
+        self.assertIn("has no `evidence`", str(ctx_ev.exception))
+        self.assertIn("is not a file this PR changes", str(ctx_ev.exception))
+
+        # 4. Crowded pictures are rejected (max 6 parts).
+        crowded = copy.deepcopy(self.sample_plan)
+        crowded["overview"]["diagram"]["nodes"] += [
+            {"id": f"x{i}", "label": f"Extra {i}", "status": "unchanged"} for i in range(2)
+        ]
+        with self.assertRaises(build_artifact.PlanValidationError) as ctx_big:
+            build_artifact.validate_and_normalize_plan(manifest, crowded)
+        self.assertIn("Diagram Size Check FAILED", str(ctx_big.exception))
+
+    def test_diagram_renders_as_diff_or_plain_with_grounded_calls(self) -> None:
+        manifest = self._build_sample_manifest()
+        validated = build_artifact.validate_and_normalize_plan(manifest, copy.deepcopy(self.sample_plan))
+        rendered = build_artifact.build_html_artifact(manifest, validated, search_dirs=[REPO_ROOT / "examples"])
+        md_out = build_artifact.build_markdown_summary(manifest, validated)
+        ov = rendered.split('id="step-overview"', 1)[1].split("</section>", 1)[0]
+
+        # Diff mode: existing parts are gray, new green, changed amber; legend shows only what's used.
+        self.assertEqual(validated["overview"]["_diagram"]["mode"], "diff")
+        self.assertIn("How the parts connect", ov)
+        self.assertLess(ov.index("footprint-table"), ov.index("How the parts connect"))
+        self.assertLess(ov.index("How the parts connect"), ov.index("Ship facts"))
+        self.assertIn('class="dg-node dg-node-changed"', ov)
+        self.assertIn('class="dg-node dg-node-new"', ov)
+        self.assertIn('class="dg-node dg-node-unchanged"', ov)
+        self.assertIn('dg-key-new', ov)
+        self.assertNotIn('dg-key-removed', ov)
+        # Each drawn call is listed with a link to the exact changed line.
+        store_sha = hashlib.sha256(b"api/routes/webhooks.ts").hexdigest()
+        self.assertIn(f"https://github.com/acme/payments/pull/142/files#diff-{store_sha}R24", ov)
+        self.assertIn('role="img"', ov)
+        # GitHub-renderable Mermaid in the Markdown summary.
+        self.assertIn("```mermaid", md_out)
+        self.assertIn('route -->|"new: claimOrSkip()"| store', md_out)
+        self.assertIn("class store,table new", md_out)
+
+        # Removed calls are red, dashed and struck through.
+        removed = copy.deepcopy(self.sample_plan)
+        removed["overview"]["diagram"]["edges"].append(
+            {"from": "providers", "to": "dispatcher", "status": "removed", "label": "direct dispatch", "evidence": "api/routes/webhooks.ts:30"}
+        )
+        v_removed = build_artifact.validate_and_normalize_plan(manifest, removed)
+        r_removed = build_artifact.build_html_artifact(manifest, v_removed, search_dirs=[REPO_ROOT / "examples"])
+        self.assertIn('class="dg-edge dg-edge-removed"', r_removed)
+        self.assertIn('class="dg-call-label is-removed"', r_removed)
+        self.assertIn("dg-key-removed", r_removed)
+
+        # All parts new -> plain diagram: no change colors, no legend, no status badges.
+        plain = copy.deepcopy(self.sample_plan)
+        for node in plain["overview"]["diagram"]["nodes"]:
+            node["status"] = "new"
+        for edge in plain["overview"]["diagram"]["edges"]:
+            edge["status"] = "new"
+            edge.setdefault("evidence", "api/routes/webhooks.ts:17")
+        v_plain = build_artifact.validate_and_normalize_plan(manifest, plain)
+        self.assertEqual(v_plain["overview"]["_diagram"]["mode"], "plain")
+        r_plain = build_artifact.build_html_artifact(manifest, v_plain, search_dirs=[REPO_ROOT / "examples"])
+        ov_plain = r_plain.split('id="step-overview"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('class="dg-node dg-node-plain"', ov_plain)
+        self.assertNotIn("dg-node-new", ov_plain)
+        self.assertNotIn('class="dg-legend"', ov_plain)
+        self.assertNotIn("dg-badge-new", ov_plain)
+
+    def test_diagram_layout_never_overlaps_boxes_or_crosses_them(self) -> None:
+        diagram = {
+            "mode": "diff",
+            "nodes": [
+                {"id": "tab", "label": "Report tab", "note": "not built yet", "status": "planned"},
+                {"id": "api", "label": "analytics", "note": "+ 2 report routes", "status": "changed"},
+                {"id": "a", "label": "issues", "note": "+ issue-rows route", "status": "changed"},
+                {"id": "b", "label": "entities", "note": "+ rule-counts route", "status": "changed"},
+                {"id": "c", "label": "integrations", "note": "unchanged", "status": "unchanged"},
+                {"id": "db", "label": "metrics table", "note": "daily counts", "status": "unchanged"},
+            ],
+            "edges": [
+                {"from": "tab", "to": "api", "status": "planned", "label": "GET"},
+                {"from": "api", "to": "a", "status": "new", "label": "GET"},
+                {"from": "api", "to": "b", "status": "new", "label": "POST"},
+                {"from": "api", "to": "c", "status": "new", "label": "GET"},
+                {"from": "b", "to": "db", "status": "new", "label": "SELECT"},
+                {"from": "tab", "to": "db", "status": "removed", "label": "old direct read"},
+                {"from": "db", "to": "api", "status": "unchanged", "label": "back edge"},
+            ],
+        }
+        lay = build_artifact.layout_diagram(diagram)
+        rects = lay["pos"]
+        ids = list(rects)
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                ax, ay, aw, ah = rects[ids[i]]
+                bx, by, bw, bh = rects[ids[j]]
+                self.assertFalse(ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah, (ids[i], ids[j]))
+        for item in lay["paths"]:
+            edge = item["edge"]
+            pts = [tuple(map(float, m)) for m in re.findall(r"([\d.]+) ([\d.]+)", item["d"])]
+            for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+                for nid, (rx, ry, rw, rh) in rects.items():
+                    if nid in (edge["from"], edge["to"]):
+                        continue
+                    lo_x, hi_x = sorted((x1, x2))
+                    lo_y, hi_y = sorted((y1, y2))
+                    crosses = lo_x < rx + rw and hi_x > rx and lo_y < ry + rh and hi_y > ry
+                    self.assertFalse(crosses, f"{edge['from']}->{edge['to']} crosses {nid}")
+            self.assertTrue(all(0 <= x <= lay["width"] and 0 <= y <= lay["height"] for x, y in pts))
+
 
 if __name__ == "__main__":
     unittest.main()
