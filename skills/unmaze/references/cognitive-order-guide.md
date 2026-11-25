@@ -40,11 +40,11 @@ When a PR has more than ~4 steps or touches multiple subsystems (e.g., DB storag
 
 ---
 
-## 4. Evolve Files Along the Timeline (`H007:start-end`) & Highlight Tricky Blocks
+## 4. Evolve Files Along the Timeline (`H007:start-end`) & Note the Tricky Blocks
 
 When an AI creates a large new file or big contiguous edit (`H007`, lines `1..180`) that spans multiple concepts:
 - **Slice it across steps** instead of dumping 180 lines in one card! Include closing braces when slicing classes/blocks (e.g., `"H007:1-34,52"` in Step 2, `"H007:35-51"` in Step 3) so Step 2 never leaks Step 3's methods early.
-- When a single function or new file inside a step is still large or dense (`>= 20` lines of SQL, state logic, or branching), add **2–5 casual `diff_highlights`** on the tricky line ranges (`"lines": "14-29"`). Skip obvious imports, getters, or short diffs (`< 20` lines).
+- Add a **code note** (`diff_highlights`) on every block a newcomer would have to stop and decode, however short, one idea per note (usually 3–12 lines, never over 40). Each note is one sentence, two at most, saying what the block does and what isn't obvious from reading it. Skip imports, wiring, renames and code that reads like English; there's no quota either way.
 
 ---
 

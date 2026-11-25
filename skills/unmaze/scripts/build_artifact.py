@@ -455,7 +455,12 @@ def compute_hunk_changed_anchors(hunk: dict[str, Any]) -> dict[int, int]:
     return anchors
 
 
-CIRCLED_NUMERALS = ("①", "②", "③", "④", "⑤")
+# Code notes (`diff_highlights`): one idea per note, explained in one sentence (two at most).
+NOTE_MAX_BLOCK_LINES = 40
+NOTE_MIN_WORDS = 12
+NOTE_MAX_WORDS = 60
+NOTE_MAX_SENTENCES = 2
+NOTE_MAX_TITLE_WORDS = 8
 
 
 def parse_line_ranges(range_part: str, context_label: str = "") -> list[tuple[int, int]]:
@@ -1914,6 +1919,49 @@ def build_change_footprint(manifest: dict[str, Any], plan: dict[str, Any]) -> li
     return declared_rows + auto_rows
 
 
+CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
+SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$)")
+
+
+def check_code_note_quality(
+    label: str, title: str, explanation: str, ranges: list[tuple[int, int]]
+) -> list[str]:
+    """A code note covers one idea and says something a reviewer can't read off the code itself."""
+    problems: list[str] = []
+    span = max(hi for _, hi in ranges) - min(lo for lo, _ in ranges) + 1
+    if span > NOTE_MAX_BLOCK_LINES:
+        problems.append(
+            f"Code Note Check FAILED — `{label}` spans {span} lines (max {NOTE_MAX_BLOCK_LINES}). "
+            f"A note covers one idea: split this block where the code changes what it's doing, "
+            f"and give each part its own note."
+        )
+    plain = strip_concept_markup(explanation)
+    words = len(plain.split())
+    if words < NOTE_MIN_WORDS:
+        problems.append(
+            f"Code Note Check FAILED — `{label}` says too little ({words} words). Say what the block does in "
+            f"plain words AND the part that isn't obvious: why it's written this way, which case it handles, or "
+            f"what would break without it."
+        )
+    elif words > NOTE_MAX_WORDS:
+        problems.append(
+            f"Code Note Check FAILED — `{label}` runs {words} words (max {NOTE_MAX_WORDS}). Keep it to one "
+            f"sentence, two at most; if it needs more, the block holds more than one idea, so split it."
+        )
+    sentences = len(SENTENCE_END_RE.findall(CODE_SPAN_RE.sub("code", plain.replace("e.g.", "eg").replace("i.e.", "ie"))))
+    if sentences > NOTE_MAX_SENTENCES:
+        problems.append(
+            f"Code Note Check FAILED — `{label}` has {sentences} sentences (max {NOTE_MAX_SENTENCES}). "
+            f"Keep one sentence, two at most, or split the block."
+        )
+    if len(strip_concept_markup(title).split()) > NOTE_MAX_TITLE_WORDS:
+        problems.append(
+            f"Code Note Check FAILED — `{label}` title is too long; name the idea in at most "
+            f"{NOTE_MAX_TITLE_WORDS} words."
+        )
+    return problems
+
+
 def hunk_review_kind(hunk: dict[str, Any]) -> str:
     """`test`, `docs`, `generated`, or `code` — only `code` counts toward the step budget."""
     hint = str(hunk.get("category_hint") or "")
@@ -2260,7 +2308,7 @@ def validate_and_normalize_plan(
                 parsed_slices.append(item)
         step["_slices"] = parsed_slices
 
-        # Validate optional interactive `diff_highlights` (max 5 per hunk card, non-overlapping)
+        # Validate optional code notes (`diff_highlights`): one idea each, non-overlapping
         raw_hls = step.get("diff_highlights")
         if raw_hls is not None:
             if not isinstance(raw_hls, list):
@@ -2270,7 +2318,6 @@ def validate_and_normalize_plan(
                 for sl_obj in parsed_slices:
                     slices_by_hid.setdefault(sl_obj["hunk_id"], []).append(sl_obj)
                 seen_hl_lines: dict[str, set[int]] = {}
-                hl_counts: dict[str, int] = {}
                 for hl_idx, hl in enumerate(raw_hls):
                     if not isinstance(hl, dict):
                         errors.append(f"`steps[{sid}].diff_highlights[{hl_idx}]` must be an object.")
@@ -2282,13 +2329,6 @@ def validate_and_normalize_plan(
                         errors.append(
                             f"`steps[{sid}].diff_highlights[{hl_idx}]` references hunk `{hl_hid}` "
                             f"which is not in `{sid}.hunk_ids`."
-                        )
-                        continue
-                    hl_counts[hl_hid] = hl_counts.get(hl_hid, 0) + 1
-                    if hl_counts[hl_hid] > 5:
-                        errors.append(
-                            f"`steps[{sid}].diff_highlights` has >5 blocks on `{hl_hid}`. "
-                            f"Cap highlights at <=5 key logical chunks per diff card so you don't overwhelm the reviewer."
                         )
                         continue
                     hl_title = str(hl.get("title") or "").strip()
@@ -2304,6 +2344,11 @@ def validate_and_normalize_plan(
                     except ValueError as exc:
                         errors.append(str(exc))
                         continue
+                    errors.extend(
+                        check_code_note_quality(
+                            f"steps[{sid}].diff_highlights[{hl_idx}]", hl_title, hl_expl, hl_ranges
+                        )
+                    )
                     expanded_lns = {ln_no for lo, hi in hl_ranges for ln_no in range(lo, hi + 1)}
                     claimed_set = seen_hl_lines.setdefault(hl_hid, set())
                     overlap = sorted(claimed_set & expanded_lns)
@@ -2841,6 +2886,26 @@ def render_code_row_html(
     )
 
 
+def render_inline_note_html(hl_entry: dict[str, Any], concept_lookup: dict[str, str]) -> str:
+    """One code note, rendered as a row inside the diff right above the lines it explains."""
+    title = str(hl_entry["title"]).strip()
+    sep = "" if title[-1:] in ".:!?" else ":"
+    lines_label = f'L{hl_entry["lines_raw"]}'.replace("-", "–")
+    lines_html = (
+        f'<a class="hl-note-lines" href="{esc(hl_entry["pr_url"])}" target="_blank" rel="noopener noreferrer" '
+        f'title="Open these lines in the PR">{esc(lines_label)} ↗</a>'
+        if hl_entry.get("pr_url")
+        else f'<span class="hl-note-lines">{esc(lines_label)}</span>'
+    )
+    return (
+        f'<span class="hl-note" role="note" id="hl-note-{esc(hl_entry["uid"])}" data-hl-trigger="{esc(hl_entry["uid"])}">'
+        f'<span class="hl-num" aria-hidden="true">{esc(hl_entry["num"])}</span>'
+        f'<span class="hl-note-text"><strong class="hl-note-title">{fmt_prose(title, concept_lookup)}{sep}</strong> '
+        f'{fmt_prose(hl_entry["explanation"], concept_lookup)}</span>'
+        f"{lines_html}</span>"
+    )
+
+
 def render_timeline_slice_card_html(
     *,
     card_uid: str,
@@ -3035,7 +3100,7 @@ def render_timeline_slice_card_html(
         if not matched_m_idxs:
             continue
         seq_idx = len(resolved_highlights)
-        num_sym = CIRCLED_NUMERALS[seq_idx] if seq_idx < len(CIRCLED_NUMERALS) else f"#{seq_idx + 1}"
+        num_sym = str(seq_idx + 1)
         hl_uid = f"{card_uid}-hl{seq_idx + 1}"
         start_row = main_window[matched_m_idxs[0]]
         hl_pr_url = compute_row_pr_url(
@@ -3071,13 +3136,12 @@ def render_timeline_slice_card_html(
             sig, cls = " ", "dl-meta"
 
         extra_attrs = ""
-        hl_marker = ""
         hl_hit = row_hl_map.get(m_idx)
         if hl_hit:
             cls += " dl-has-hl"
             if m_idx == hl_hit["start_m_idx"]:
                 cls += " dl-hl-start"
-                hl_marker = f'<span class="dl-hl-marker" aria-hidden="true">{esc(hl_hit["num"])}</span>'
+                main_rows_html.append(render_inline_note_html(hl_hit, concept_lookup))
             if m_idx == hl_hit["end_m_idx"]:
                 cls += " dl-hl-end"
             extra_attrs = f' data-hl-id="{esc(hl_hit["uid"])}"'
@@ -3094,7 +3158,6 @@ def render_timeline_slice_card_html(
                 content=ln.get("content", ""),
                 lang=lang if kind != "meta" else "plain",
                 extra_attrs=extra_attrs,
-                trailing_html=hl_marker,
             )
         )
 
@@ -3124,77 +3187,25 @@ def render_timeline_slice_card_html(
         )
 
     hl_hint_html = ""
-    hl_strip_html = ""
     if resolved_highlights:
-        strip_btns = "".join(
-            f'<button type="button" class="dl-hl-pill" data-hl-trigger="{esc(h_e["uid"])}" '
-            f'aria-expanded="false" aria-controls="hl-note-{esc(h_e["uid"])}">'
-            f'<span class="dl-hl-num" aria-hidden="true">{esc(h_e["num"])}</span>'
-            f'<span>{esc(h_e["title"])}</span>'
-            f'<span class="dl-hl-ln">L{esc(h_e["lines_raw"])}</span></button>'
-            for h_e in resolved_highlights
-        )
-        hl_strip_html = (
-            f'<div class="hl-chip-strip">'
-            f'<span class="hl-strip-lbl">Click block to explain:</span>'
-            f"{strip_btns}</div>"
+        n_notes = len(resolved_highlights)
+        note_word = "note" if n_notes == 1 else "notes"
+        hl_hint_html = (
+            f'<button type="button" class="notes-toggle-btn" data-notes-toggle aria-pressed="false" '
+            f'data-hide-label="Hide {n_notes} {note_word}" data-show-label="Show {n_notes} {note_word}">'
+            f"Hide {n_notes} {note_word}</button>"
         )
 
     caption_id = f"cap-{esc(card_uid)}"
     note_html = f'<p class="hunk-note">{fmt_prose(note, concept_lookup)}</p>' if note else ""
     if resolved_highlights:
-        hl_cards: list[str] = []
-        total_hl = len(resolved_highlights)
-        for h_pos, hl_entry in enumerate(resolved_highlights):
-            prev_hl_btn = (
-                f'<button type="button" class="ctx-btn" data-hl-switch="{esc(resolved_highlights[h_pos - 1]["uid"])}">← Prev part</button>'
-                if h_pos > 0
-                else "<span></span>"
-            )
-            next_hl_btn = (
-                f'<button type="button" class="ctx-btn" data-hl-switch="{esc(resolved_highlights[h_pos + 1]["uid"])}">Next part →</button>'
-                if h_pos + 1 < total_hl
-                else "<span></span>"
-            )
-            nav_row = (
-                f'<div class="hl-note-nav">{prev_hl_btn}{next_hl_btn}</div>'
-                if total_hl > 1
-                else ""
-            )
-            hl_lines_badge = (
-                f'<a class="hl-note-lines hl-note-pr-link" href="{esc(hl_entry["pr_url"])}" '
-                f'target="_blank" rel="noopener noreferrer" title="Open L{esc(hl_entry["lines_raw"])} in GitHub PR ↗">'
-                f'L{esc(hl_entry["lines_raw"])} ↗</a>'
-                if hl_entry.get("pr_url")
-                else f'<code class="hl-note-lines">L{esc(hl_entry["lines_raw"])}</code>'
-            )
-            hl_cards.append(
-                f'<div class="hl-note-card" id="hl-note-{esc(hl_entry["uid"])}" data-hl-note="{esc(hl_entry["uid"])}" hidden>'
-                f'<div class="hl-note-head">'
-                f'<div class="hl-note-heading">'
-                f'<span class="hl-note-num" aria-hidden="true">{esc(hl_entry["num"])}</span>'
-                f'<strong>{esc(hl_entry["title"])}</strong>'
-                f"{hl_lines_badge}"
-                f"</div>"
-                f'<button type="button" class="hl-close-btn" data-hl-close="{esc(hl_entry["uid"])}" aria-label="Close block explanation">×</button>'
-                f"</div>"
-                f'<p class="hl-note-body">{fmt_prose(hl_entry["explanation"], concept_lookup)}</p>'
-                f"{nav_row}"
-                f"</div>"
-            )
         diff_view_html = (
-            f"{hl_strip_html}"
-            f'<div class="diff-view diff-view-hl">'
-            f'<div class="diff-code-col">'
+            f'<div class="diff-view has-notes">'
             f"{before_bar_html}"
             f'<pre class="diff-pre" role="region" aria-labelledby="{caption_id}" tabindex="0">'
             f'<code class="diff-code">{before_rows_html}{"".join(main_rows_html)}{after_rows_html}</code>'
             f"</pre>"
             f"{after_bar_html}"
-            f"</div>"
-            f'<aside class="hl-side-rail" hidden aria-label="Highlighted code explanation">'
-            f'{"".join(hl_cards)}'
-            f"</aside>"
             f"</div>"
             f"{snapshot_block_html}"
         )
@@ -3218,9 +3229,8 @@ def render_timeline_slice_card_html(
       <code class="hunk-filepath" id="{caption_id}">{path_display}</code>
       {area_tag_html}
       {timeline_tag}
-      {hl_hint_html}
     </div>
-    <div class="hunk-right">{step_file_btn_html}{stats_html}{link_html}</div>
+    <div class="hunk-right">{hl_hint_html}{step_file_btn_html}{stats_html}{link_html}</div>
   </div>
   {note_html}
   <details class="hunk-disclosure">
@@ -3235,9 +3245,8 @@ def render_timeline_slice_card_html(
       <code class="hunk-filepath" id="{caption_id}">{path_display}</code>
       {area_tag_html}
       {timeline_tag}
-      {hl_hint_html}
     </div>
-    <div class="hunk-right">{step_file_btn_html}{stats_html}{link_html}</div>
+    <div class="hunk-right">{hl_hint_html}{step_file_btn_html}{stats_html}{link_html}</div>
   </div>
   {note_html}
   {diff_view_html}
@@ -5720,35 +5729,16 @@ def build_html_artifact(
     .dl-exp {{ background-color: var(--subtle); opacity: 0.88; }}
     .dl-meta {{ color: var(--muted); font-style: italic; }}
 
-    /* Interactive Diff-Block Highlights (Translucent Overlay Over Red/Green/Gray + Side Card) */
-    .hl-hint-badge {{
-      font-size: 0.68rem;
-      font-weight: 640;
-      padding: 0.08rem 0.44rem;
-      border-radius: 999px;
-      border: 1px solid var(--accent);
-      background: var(--accent-soft);
-      color: var(--accent);
-      white-space: nowrap;
-    }}
+    /* Inline code notes: a short note sits right above the lines it explains (no side panel). */
+    .diff-pre {{ container-type: inline-size; }}
 
     .dl-has-hl {{
-      cursor: pointer;
       box-shadow: inset 3px 0 0 rgba(88, 166, 255, 0.52);
-    }}
-
-    @media (forced-colors: active) {{
-      .dl-has-hl {{ border-inline-start: 3px solid Highlight; }}
     }}
 
     .dl-has-hl.is-hl-hover {{
       box-shadow: inset 4px 0 0 var(--accent);
       background-image: linear-gradient(rgba(56, 139, 253, 0.16), rgba(56, 139, 253, 0.16));
-    }}
-
-    .dl-has-hl.is-hl-active {{
-      box-shadow: inset 4px 0 0 var(--accent);
-      background-image: linear-gradient(rgba(56, 139, 253, 0.26), rgba(56, 139, 253, 0.26));
     }}
 
     @supports (color: color-mix(in oklab, white, black)) {{
@@ -5767,227 +5757,96 @@ def build_html_artifact(
         background-image: none;
         background-color: color-mix(in oklab, var(--del-bg), var(--accent) 20%);
       }}
-      .dl-ctx.is-hl-active {{
-        background-image: none;
-        background-color: color-mix(in oklab, var(--surface), var(--accent) 22%);
-      }}
-      .dl-add.is-hl-active {{
-        background-image: none;
-        background-color: color-mix(in oklab, var(--add-bg), var(--accent) 28%);
-      }}
-      .dl-del.is-hl-active {{
-        background-image: none;
-        background-color: color-mix(in oklab, var(--del-bg), var(--accent) 28%);
-      }}
     }}
 
-    .hl-chip-strip {{
-      padding: 0.38rem 0.75rem;
-      background: var(--subtle);
-      border-bottom: 1px solid var(--border);
+    .hl-note {{
+      position: sticky;
+      left: 0;
+      box-sizing: border-box;
+      inline-size: 100cqi;
+      max-inline-size: 100cqi;
       display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.4rem;
-    }}
-
-    .hl-strip-lbl {{
-      font-size: 0.72rem;
-      font-weight: 620;
-      color: var(--muted);
-      margin-inline-end: 0.15rem;
-    }}
-
-    .dl-hl-pill {{
-      appearance: none;
-      border: 1px solid var(--accent);
-      background: var(--surface);
-      color: var(--accent);
-      border-radius: 999px;
-      padding: 0.12rem 0.54rem;
+      align-items: flex-start;
+      gap: 0.6rem;
+      margin: 0.45rem 0 0.15rem;
+      padding: 0.5rem 0.85rem 0.55rem 0.7rem;
+      border-inline-start: 3px solid var(--accent);
+      background: var(--accent-soft);
+      color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      font-size: 0.72rem;
-      font-weight: 650;
-      line-height: 1.35;
-      cursor: pointer;
+      font-size: 0.86rem;
+      line-height: 1.55;
+      white-space: normal;
+    }}
+
+    .hl-note:first-child {{ margin-top: 0.15rem; }}
+
+    .hl-note.is-hl-hover {{
+      box-shadow: 0 0 0 1px var(--accent);
+    }}
+
+    .hl-num {{
+      flex: none;
+      inline-size: 1.3rem;
+      block-size: 1.3rem;
+      border-radius: 999px;
+      background: var(--accent);
+      color: var(--surface);
+      font-size: 0.7rem;
+      font-weight: 700;
       display: inline-flex;
       align-items: center;
-      gap: 0.3rem;
+      justify-content: center;
+      margin-top: 0.1rem;
+    }}
+
+    .hl-note-text {{ flex: 1; min-width: 0; max-width: 92ch; }}
+    .hl-note-title {{ font-weight: 650; }}
+
+    .hl-note-lines {{
+      flex: none;
+      margin-top: 0.12rem;
+      padding: 0.05rem 0.38rem;
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 0.7rem;
+      text-decoration: none;
       white-space: nowrap;
     }}
 
-    .dl-hl-ln {{
-      font-family: ui-monospace, SFMono-Regular, monospace;
-      font-size: 0.66rem;
-      opacity: 0.75;
+    a.hl-note-lines {{ color: var(--accent); }}
+    a.hl-note-lines:hover {{ text-decoration: underline; }}
+
+    @container (max-width: 520px) {{
+      .hl-note {{ flex-wrap: wrap; row-gap: 0.3rem; }}
+      .hl-note-text {{ flex-basis: calc(100% - 2rem); }}
+      .hl-note-lines {{ margin: 0 0 0 1.9rem; }}
     }}
 
-    .dl-hl-pill.is-hl-hover,
-    .dl-hl-pill[aria-expanded="true"] {{
-      background: var(--accent);
-      color: #ffffff;
-    }}
+    .hunk-card.notes-hidden .hl-note {{ display: none; }}
+    .hunk-card.notes-hidden .dl-has-hl {{ box-shadow: none; }}
 
-    :root:has(> head > meta[name="color-scheme"][content="dark"]) .dl-hl-pill.is-hl-hover,
-    :root:has(> head > meta[name="color-scheme"][content="dark"]) .dl-hl-pill[aria-expanded="true"] {{
-      color: #0b0f16;
-    }}
-
-    @media (prefers-color-scheme: dark) {{
-      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .dl-hl-pill.is-hl-hover,
-      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .dl-hl-pill[aria-expanded="true"] {{
-        color: #0b0f16;
-      }}
-    }}
-
-    .dl-hl-marker {{
-      margin-inline-start: 0.55rem;
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-      font-size: 0.72rem;
-      font-weight: 750;
-      color: var(--accent);
-      user-select: none;
-    }}
-
-    /* Side-Margin Explanation Rail (Never Covers Code) */
-    .hl-side-rail[hidden], .hl-note-card[hidden] {{ display: none; }}
-
-    .diff-view-hl.has-active-hl {{
-      display: flex;
-      flex-direction: column;
-    }}
-
-    .diff-view-hl.has-active-hl .hl-side-rail {{
-      background: var(--subtle);
-      border-top: 1px solid var(--border);
-      padding: 0.55rem;
-    }}
-
-    @media (min-width: 960px) {{
-      .diff-view-hl.has-active-hl {{
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 264px;
-        align-items: stretch;
-      }}
-      .diff-view-hl.has-active-hl .diff-code-col {{
-        min-width: 0;
-        border-inline-end: 1px solid var(--border);
-      }}
-      .diff-view-hl.has-active-hl .hl-side-rail {{
-        border-top: 0;
-      }}
-    }}
-
-    @supports (container-type: inline-size) {{
-      @media (min-width: 960px) {{
-        .diff-view-hl.has-active-hl {{
-          display: flex;
-        }}
-        .diff-view-hl.has-active-hl .diff-code-col {{
-          border-inline-end: 0;
-        }}
-        .diff-view-hl.has-active-hl .hl-side-rail {{
-          border-top: 1px solid var(--border);
-        }}
-      }}
-      @container (min-width: 680px) {{
-        .diff-view-hl.has-active-hl {{
-          display: grid;
-          grid-template-columns: minmax(0, 1fr) 264px;
-          align-items: stretch;
-        }}
-        .diff-view-hl.has-active-hl .diff-code-col {{
-          min-width: 0;
-          border-inline-end: 1px solid var(--border);
-        }}
-        .diff-view-hl.has-active-hl .hl-side-rail {{
-          border-top: 0;
-        }}
-      }}
-    }}
-
-    .hl-note-card {{
-      background: var(--surface);
-      border: 1.5px solid var(--accent);
-      border-radius: 8px;
-      padding: 0.65rem 0.75rem;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    }}
-
-    .hl-note-head {{
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 0.4rem;
-      margin-bottom: 0.4rem;
-    }}
-
-    .hl-note-heading {{
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.32rem;
-      font-size: 0.81rem;
-    }}
-
-    .hl-note-num {{
-      color: var(--accent);
-      font-weight: 750;
-    }}
-
-    .hl-note-lines {{
-      font-size: 0.69rem;
-      font-family: ui-monospace, SFMono-Regular, monospace;
-      padding: 0.05rem 0.34rem;
-      border-radius: 4px;
-      background: var(--subtle);
-      color: var(--muted);
-      text-decoration: none;
-    }}
-
-    .hl-note-pr-link {{
-      color: var(--accent);
-      background: var(--accent-soft);
-      font-weight: 620;
-    }}
-
-    .hl-note-pr-link:hover {{
-      text-decoration: underline;
-    }}
-
-    .hl-close-btn {{
+    .notes-toggle-btn {{
       appearance: none;
-      border: 0;
-      background: transparent;
+      border: 1px solid var(--border);
+      background: var(--surface);
       color: var(--muted);
-      font-size: 1rem;
-      line-height: 1;
-      padding: 0.05rem 0.25rem;
+      border-radius: 6px;
+      padding: 0.1rem 0.5rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 0.72rem;
+      font-weight: 600;
       cursor: pointer;
-      border-radius: 4px;
+      white-space: nowrap;
     }}
 
-    .hl-close-btn:hover {{
-      background: var(--subtle);
-      color: var(--text);
-    }}
+    .notes-toggle-btn:hover {{ color: var(--text); border-color: var(--text); }}
 
-    .hl-note-body {{
-      margin: 0;
-      font-size: 0.82rem;
-      line-height: 1.48;
-      color: var(--text);
-    }}
-
-    .hl-note-nav {{
-      margin-top: 0.5rem;
-      padding-top: 0.4rem;
-      border-top: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 0.74rem;
+    @media (forced-colors: active) {{
+      .dl-has-hl {{ border-inline-start: 3px solid Highlight; }}
+      .hl-note {{ border: 1px solid CanvasText; }}
     }}
 
     .ln {{
@@ -6651,51 +6510,6 @@ def build_html_artifact(
         if (!related) setHoveredHighlight("");
       }});
 
-      function selectDiffHighlight(card, hlId, forceOpen = false) {{
-        if (!card) return;
-        const diffView = card.querySelector(".diff-view-hl");
-        const sideRail = card.querySelector(".hl-side-rail");
-        if (!diffView || !sideRail) return;
-
-        const curActive = diffView.getAttribute("data-active-hl") || "";
-        const nextActive = (!forceOpen && curActive === hlId) ? "" : hlId;
-        diffView.setAttribute("data-active-hl", nextActive);
-
-        card.querySelectorAll(".dl-has-hl").forEach((row) => {{
-          row.classList.toggle("is-hl-active", Boolean(nextActive) && row.getAttribute("data-hl-id") === nextActive);
-        }});
-        card.querySelectorAll("[data-hl-trigger]").forEach((btn) => {{
-          btn.setAttribute("aria-expanded", String(Boolean(nextActive) && btn.getAttribute("data-hl-trigger") === nextActive));
-        }});
-
-        const notes = Array.from(sideRail.querySelectorAll(".hl-note-card"));
-        notes.forEach((n) => {{
-          n.hidden = n.getAttribute("data-hl-note") !== nextActive;
-          n.style.marginTop = "0px";
-        }});
-
-        if (!nextActive) {{
-          sideRail.hidden = true;
-          diffView.classList.remove("has-active-hl");
-          return;
-        }}
-
-        sideRail.hidden = false;
-        diffView.classList.add("has-active-hl");
-
-        // Align side card vertically next to the highlighted lines when in side-by-side grid mode
-        const activeNote = sideRail.querySelector(`[data-hl-note="${{nextActive}}"]`);
-        const startRow = card.querySelector(`.dl-hl-start[data-hl-id="${{nextActive}}"]`);
-        if (activeNote && startRow && getComputedStyle(diffView).display === "grid") {{
-          const railRect = sideRail.getBoundingClientRect();
-          const rowRect = startRow.getBoundingClientRect();
-          const noteRect = activeNote.getBoundingClientRect();
-          const desired = Math.max(0, rowRect.top - railRect.top - 8);
-          const maxTop = Math.max(0, railRect.height - noteRect.height - 12);
-          activeNote.style.marginTop = `${{Math.round(Math.min(desired, maxTop))}}px`;
-        }}
-      }}
-
       document.addEventListener("click", (event) => {{
         // Screenshot gallery tabs and previous / next buttons
         const galleryTab = event.target.closest(".vis-gallery-tab");
@@ -6711,42 +6525,17 @@ def build_html_artifact(
           return;
         }}
 
-        // Interactive Diff-Block Highlight close / switch / toggle
-        const closeHlBtn = event.target.closest("[data-hl-close]");
-        if (closeHlBtn) {{
-          selectDiffHighlight(closeHlBtn.closest(".hunk-card"), "", false);
-          return;
-        }}
-
-        const switchHlBtn = event.target.closest("[data-hl-switch]");
-        if (switchHlBtn) {{
-          selectDiffHighlight(
-            switchHlBtn.closest(".hunk-card"),
-            switchHlBtn.getAttribute("data-hl-switch") || "",
-            true
-          );
-          return;
-        }}
-
-        const pillHlBtn = event.target.closest("[data-hl-trigger]");
-        if (pillHlBtn) {{
-          selectDiffHighlight(
-            pillHlBtn.closest(".hunk-card"),
-            pillHlBtn.getAttribute("data-hl-trigger") || "",
-            false
-          );
-          return;
-        }}
-
-        const rowHl = event.target.closest(".dl-has-hl[data-hl-id]");
-        if (rowHl && !event.target.closest("button, a")) {{
-          const sel = window.getSelection ? window.getSelection() : null;
-          if (sel && !sel.isCollapsed) return;
-          selectDiffHighlight(
-            rowHl.closest(".hunk-card"),
-            rowHl.getAttribute("data-hl-id") || "",
-            false
-          );
+        // Per-card "Hide notes" / "Show notes" toggle for inline code notes
+        const notesBtn = event.target.closest("[data-notes-toggle]");
+        if (notesBtn) {{
+          const card = notesBtn.closest(".hunk-card");
+          if (card) {{
+            const hidden = card.classList.toggle("notes-hidden");
+            notesBtn.setAttribute("aria-pressed", String(hidden));
+            notesBtn.textContent = hidden
+              ? notesBtn.getAttribute("data-show-label")
+              : notesBtn.getAttribute("data-hide-label");
+          }}
           return;
         }}
 
@@ -7073,6 +6862,9 @@ def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> st
                 lines.append(f"- **{ckind['label']}:** {co['text']}")
         for gap in st.get("untested_gaps") or []:
             lines.append(f"- **Missing test coverage:** {gap}")
+        for hl in st.get("diff_highlights") or []:
+            if isinstance(hl, dict) and hl.get("title") and hl.get("explanation"):
+                lines.append(f"- **Note on L{hl.get('lines')} — {hl['title']}:** {hl['explanation']}")
         for sl in st["_slices"]:
             h = hunk_map[sl["hunk_id"]]
             loc = f"L{sl['ranges'][0][0]}" if sl.get("ranges") else (f"L{h['new_start']}" if not h["is_synthetic"] else "file")

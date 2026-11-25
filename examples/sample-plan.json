@@ -341,15 +341,27 @@
       "diff_highlights": [
         {
           "hunk_id": "H007",
-          "lines": "14-29",
-          "title": "Single-query lease steal",
-          "explanation": "Grabs a 60s `CLAIMED` row—or steals an expired one—in a single SQL query so two workers never race. Already `COMPLETED` rows update zero rows."
+          "lines": "14",
+          "title": "Expiry uses this server's clock",
+          "explanation": "The 60-second expiry is computed with this server's clock, but the takeover check below compares it with the database clock, so clock drift can shorten or stretch the lock."
+        },
+        {
+          "hunk_id": "H007",
+          "lines": "16-25",
+          "title": "Claim it, or take over a dead claim",
+          "explanation": "Inserts a claim for this event; if one already exists, it only takes it over when that claim is still open and its timer ran out, so a crashed worker's event gets retried but a finished one never runs twice."
+        },
+        {
+          "hunk_id": "H007",
+          "lines": "26-29",
+          "title": "No row back means someone else has it",
+          "explanation": "The database returns a row only when we got the claim, so an empty result means another worker is running this event or already finished it, and we skip it."
         },
         {
           "hunk_id": "H007",
           "lines": "30-33",
-          "title": "Fail-open DB catch",
-          "explanation": "If Postgres throws, we return `PROCESS` anyway so a quick DB blip doesn't drop live customer webhooks."
+          "title": "Database down? Process anyway",
+          "explanation": "If the claim query fails, we run the webhook instead of dropping it, trading a possible duplicate for never losing an event; worth a look for billing events."
         }
       ],
       "callouts": [
@@ -390,6 +402,14 @@
           ]
         ]
       },
+      "diff_highlights": [
+        {
+          "hunk_id": "H007",
+          "lines": "47-48",
+          "title": "Only delete open claims",
+          "explanation": "The delete only removes a row that's still marked CLAIMED, so freeing a claim after an error can never erase a finished event and let it run twice."
+        }
+      ],
       "hunk_ids": [
         "H007:35-51"
       ]
@@ -449,15 +469,27 @@
       "diff_highlights": [
         {
           "hunk_id": "H002",
-          "lines": "18-27",
-          "title": "Validate ID & skip duplicates",
-          "explanation": "Grabs `x-webhook-id` (or `req.body.id`), returns `400` if it's missing, and replies `200 deduplicated` right away if [[idempotency-store|another worker owns or finished it]]."
+          "lines": "19-22",
+          "title": "Where the event ID comes from",
+          "explanation": "Uses the provider's `x-webhook-id` header and falls back to the body's `id`; with neither, the request is rejected with `400` instead of running without duplicate protection."
         },
         {
           "hunk_id": "H002",
-          "lines": "29-36",
-          "title": "Finalize or free lease on error",
-          "explanation": "Replaces the old unguarded `dispatchProviderWebhook` call: marks the key `COMPLETED` once `WebhookDispatcher` finishes, or deletes the `CLAIMED` row in `catch` so the next retry isn't stuck."
+          "lines": "24-27",
+          "title": "Duplicates get a 200, not an error",
+          "explanation": "Answers `200` to duplicates on purpose, because Stripe and GitHub keep retrying anything that isn't a success; the `reason` field says whether it's still running or already done."
+        },
+        {
+          "hunk_id": "H002",
+          "lines": "30-31",
+          "title": "Mark done only after it worked",
+          "explanation": "The event is marked finished only after `WebhookDispatcher` succeeds, so a crash between the two leaves an open claim that expires and gets retried."
+        },
+        {
+          "hunk_id": "H002",
+          "lines": "33-35",
+          "title": "Free the claim, then fail",
+          "explanation": "On an error it deletes the claim and rethrows, so the provider sees a `500` and retries right away instead of waiting 60 seconds for the claim to expire."
         }
       ],
       "hunk_ids": [

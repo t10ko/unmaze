@@ -169,15 +169,21 @@
       "diff_highlights": [
         {
           "hunk_id": "H007",
-          "lines": "14-29",
-          "title": "Single-query lease steal",
-          "explanation": "Grabs a 60s `CLAIMED` lock—or steals an expired one—in one SQL trip so two workers never race."
+          "lines": "16-25",
+          "title": "Claim it, or take over a dead claim",
+          "explanation": "Inserts a claim for this event; if one already exists, it only takes it over when that claim is still open and its timer ran out, so a crashed worker's event gets retried but a finished one never runs twice."
+        },
+        {
+          "hunk_id": "H007",
+          "lines": "26-29",
+          "title": "No row back means someone else has it",
+          "explanation": "The database returns a row only when we got the claim, so an empty result means another worker is running this event or already finished it, and we skip it."
         },
         {
           "hunk_id": "H007",
           "lines": "30-33",
-          "title": "Fail-open DB catch",
-          "explanation": "If Postgres hiccups, we return `PROCESS` anyway so a quick DB blip doesn't drop live webhooks."
+          "title": "Database down? Process anyway",
+          "explanation": "If the claim query fails, we run the webhook instead of dropping it, trading a possible duplicate for never losing an event; worth a look for billing events."
         }
       ],
       "callouts": [
@@ -260,7 +266,8 @@
    - `{"kind": "arrow", "from_x": 60.0, "from_y": 29.0, "to_x": 77.2, "to_y": 41.0, "label": "Short label"}`
    - `{"kind": "box", "x": 12.0, "y": 30.0, "w": 40.0, "h": 18.0, "label": "Short label"}`
    - Always inspect the screenshot with `Read` before writing coordinates so every red mark lands accurately on the target UI element.
-7. **Interactive Diff-Block Highlights (`diff_highlights[]`, optional on dense/large diffs):**
-   - Use ONLY on large new files or dense functions (`>= 20` lines or tricky branching/SQL). Skip trivial/short hunks!
-   - Capped at **<= 5 non-overlapping blocks per hunk card** (`build_artifact.py` fails with exit code `2` if `> 5` or overlapping).
-   - Format: `{"hunk_id": "H007", "lines": "14-29", "title": "2-4 word label", "explanation": "1-2 simple sentences"}`. Hovering tints those lines across green/red/gray rows; clicking opens a side-margin explanation card without covering code.
+7. **Inline Code Notes (`diff_highlights[]`):**
+   - Add a note on any block a newcomer would have to stop and decode, whatever its size (non-obvious conditions, ordering, queries, regex, magic numbers, retries/caching/concurrency, swallowed errors, clever one-liners, test setup encoding a rule); skip imports, wiring, renames and self-describing code. There is no minimum and no per-file cap.
+   - One idea per note: usually 3–12 lines, a single line is fine, never more than 40 (exit code `2`); notes can't overlap.
+   - `explanation`: one sentence, two at most, 12–60 words (exit code `2` outside that), saying what the block does **and** what isn't obvious (why it's written this way, which case it handles, what breaks without it). `title`: the idea in ≤ 8 words.
+   - Rendering: each note sits inside the diff right above its first line, its lines get a tinted edge, hovering either one highlights both, the line badge links to the PR, and each file card has a "Hide notes" toggle. The Markdown summary lists every note under its step.

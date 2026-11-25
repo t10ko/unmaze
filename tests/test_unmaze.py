@@ -385,7 +385,7 @@ class UnmazeTestSuite(unittest.TestCase):
             self.assertNotIn(".sql", lbl)
             self.assertNotIn("/", lbl)
 
-    def test_interactive_diff_highlights_and_anti_noise_guardrails(self) -> None:
+    def test_inline_code_notes_and_note_quality_checks(self) -> None:
         manifest = self._build_sample_manifest()
         validated = build_artifact.validate_and_normalize_plan(
             manifest, copy.deepcopy(self.sample_plan)
@@ -393,29 +393,65 @@ class UnmazeTestSuite(unittest.TestCase):
         rendered = build_artifact.build_html_artifact(
             manifest, validated, search_dirs=[REPO_ROOT / "examples"]
         )
+        step2 = rendered.split('id="step-2"', 1)[1].split("</section>", 1)[0]
 
-        # Sample plan highlights render interactive rows, pills, and non-overlapping side rail
-        self.assertIn('class="diff-view diff-view-hl"', rendered)
-        self.assertIn('class="hl-side-rail"', rendered)
-        self.assertIn("Single-query lease steal", rendered)
-        self.assertIn("Finalize or free lease on error", rendered)
+        # Notes sit inside the diff, right above the first line they explain; no side panel, no pill strip.
+        self.assertNotIn('class="hl-side-rail"', rendered)
+        self.assertNotIn('class="dl-hl-pill"', rendered)
+        self.assertNotIn('class="hl-chip-strip"', rendered)
+        self.assertEqual(step2.count('class="hl-note"'), 4)
+        first_note = step2.index('class="hl-note"')
+        uid = re.search(r'data-hl-trigger="([^"]+)"', step2[first_note:]).group(1)
+        first_row = step2.rfind('<span class="dl ', 0, step2.index(f'data-hl-id="{uid}"'))
+        self.assertLess(first_note, first_row)
+        self.assertNotIn('<span class="dl ', step2[first_note:first_row])
+        self.assertIn("Expiry uses this server&#x27;s clock:</strong>", step2)
+        self.assertIn('<span class="hl-num" aria-hidden="true">4</span>', step2)
+        # Each card with notes gets a "Hide notes" toggle.
+        self.assertIn('data-hide-label="Hide 4 notes" data-show-label="Show 4 notes"', step2)
+        md_out = build_artifact.build_markdown_summary(manifest, validated)
+        self.assertIn("- **Note on L16-25 — Claim it, or take over a dead claim:**", md_out)
 
-        # >5 highlights on a single hunk card -> rejected by anti-noise guardrail!
-        noisy_plan = copy.deepcopy(self.sample_plan)
-        noisy_plan["steps"][1]["diff_highlights"] = [
-            {"hunk_id": "H007", "lines": str(i), "title": f"Part {i}", "explanation": "Too granular."}
-            for i in range(1, 7)
+        # No per-file cap: notes follow the code, one idea each.
+        many = copy.deepcopy(self.sample_plan)
+        many["steps"][1]["diff_highlights"] = [
+            {
+                "hunk_id": "H007",
+                "lines": str(ln),
+                "title": f"Line {ln}",
+                "explanation": "Explains one line of the claim query so a reviewer knows exactly why it is there and what breaks without it.",
+            }
+            for ln in range(16, 23)
         ]
-        with self.assertRaises(build_artifact.PlanValidationError) as ctx_noisy:
-            build_artifact.validate_and_normalize_plan(manifest, noisy_plan)
-        self.assertIn(">5 blocks", str(ctx_noisy.exception))
+        build_artifact.validate_and_normalize_plan(manifest, many)
 
-        # Overlapping highlight line ranges on same hunk -> rejected!
+        def note_errors(**overrides: str) -> str:
+            plan = copy.deepcopy(self.sample_plan)
+            plan["steps"][1]["diff_highlights"][1].update(overrides)
+            with self.assertRaises(build_artifact.PlanValidationError) as ctx:
+                build_artifact.validate_and_normalize_plan(manifest, plan)
+            return str(ctx.exception)
+
+        # Too thin: restating the code in a few words says nothing.
+        self.assertIn("says too little", note_errors(explanation="Merges the rows and logs it."))
+        # Too many sentences, or too long: the block holds more than one idea.
+        self.assertIn(
+            "has 3 sentences",
+            note_errors(explanation="It inserts a claim row. It may take over an expired one. Then it returns the status column so we know."),
+        )
+        self.assertIn("runs ", note_errors(explanation=" ".join(["word"] * 61) + "."))
+        # One idea per note: a block longer than 40 lines must be split.
+        self.assertIn("spans 41 lines", note_errors(lines="1-41"))
+        # Backticked code with dots doesn't count as extra sentences.
+        plan_ok = copy.deepcopy(self.sample_plan)
+        plan_ok["steps"][1]["diff_highlights"][1]["explanation"] = (
+            "Calls `this.db.query()` once with `ON CONFLICT ... DO UPDATE`, so the claim and the takeover of an expired claim happen in one round trip."
+        )
+        build_artifact.validate_and_normalize_plan(manifest, plan_ok)
+
+        # Overlapping notes on the same lines are still rejected.
         overlap_plan = copy.deepcopy(self.sample_plan)
-        overlap_plan["steps"][1]["diff_highlights"] = [
-            {"hunk_id": "H007", "lines": "14-22", "title": "A", "explanation": "First."},
-            {"hunk_id": "H007", "lines": "20-26", "title": "B", "explanation": "Overlaps L20-22."},
-        ]
+        overlap_plan["steps"][1]["diff_highlights"][2]["lines"] = "24-29"
         with self.assertRaises(build_artifact.PlanValidationError) as ctx_ov:
             build_artifact.validate_and_normalize_plan(manifest, overlap_plan)
         self.assertIn("overlaps already-highlighted", str(ctx_ov.exception))
@@ -791,9 +827,9 @@ class UnmazeTestSuite(unittest.TestCase):
             f'target="_blank" rel="noopener noreferrer" title="Open line 52 in PR ↗">35</a>',
             step2_sec,
         )
-        # Highlight explanation card badge (`L14-29 ↗`) also links straight to `R14`
+        # Each code note's line badge (`L14 ↗`) also links straight to its first line (`R14`)
         self.assertIn(
-            f'class="hl-note-lines hl-note-pr-link" href="https://github.com/acme/payments/pull/142/files#diff-{store_sha}R14"',
+            f'class="hl-note-lines" href="https://github.com/acme/payments/pull/142/files#diff-{store_sha}R14"',
             step2_sec,
         )
 
@@ -856,7 +892,7 @@ class UnmazeTestSuite(unittest.TestCase):
         self.assertEqual(refreshed["mechanical"]["groups"][0]["hunk_ids"], ["H005", "H007"])
         self.assertEqual(
             [(h["hunk_id"], h["lines"]) for h in by_id["step-2"]["diff_highlights"]],
-            [("H008", "15-30"), ("H008", "31-34")],
+            [("H008", "15"), ("H008", "17-26"), ("H008", "27-30"), ("H008", "31-34")],
         )
         self.assertEqual(report["auto_assigned"], {"step-2": 1})
         self.assertEqual(report["dropped_lines"], 0)

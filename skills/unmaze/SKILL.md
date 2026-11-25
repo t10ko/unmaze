@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.10.0"
+  version: "0.11.0"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
@@ -21,7 +21,7 @@ GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at
 - **Arc-style Chapters** (splitting large PRs into ordered chapters—`Chapter 1`, `Chapter 2`—in a clean sidebar),
 - **Top-Bar Role & Area Tree Filter** (2-level `Role Surface -> App Area` filter that dims unrelated chapters and steps so FE, BE, or domain engineers can review just their slice),
 - **Cumulative Timeline File Evolution** (showing each file *as it exists at that step*, slicing large hunks with `H007:1-34,52` so future steps don't leak early),
-- **Interactive Diff-Block Highlights** (hover-tinted code chunks inside large diffs or new files that open a side-margin explanation on click without covering any code),
+- **Inline Code Notes** (a short note sits right above each block a newcomer would have to stop and decode, inside the diff, with its lines tinted and linked to the PR; one "Hide notes" button per file),
 - **Semantic Concept Modals Everywhere You Encounter Them** (a dedicated 2nd-pass AI sweep explains **both** brand-new terms/things introduced by this task **and** existing repo concepts, semantically linking casual phrases like `[[claimed-lease|frees the lock]]` wherever they're talked about across every step, bullet, table, caption, and diff note),
 - **Mandatory Red-Marked Screenshots — Even on Backend PRs** (traces backend/API/DB changes to the frontend screen they impact and places red circles, boxes, and arrows showing what the code is for), and
 - **100% deterministic changed-line accounting**.
@@ -115,13 +115,19 @@ A reviewer must be able to answer **"what does this PR touch, and what could bre
 #### C. Cumulative Timeline File Evolution & Sub-Hunk Slicing (`H007:1-34,52`)
 - `build_artifact.py` reconstructs each file **as it exists at Step $N$**: earlier steps are already merged into the file, Step $N$ glows `+`/`−`, and future steps **do not exist in that file yet**.
 - Whenever a single large hunk or new file mixes multiple stages (e.g., types + core method + later lifecycle helpers, or imports + logic), **slice it by line range** (`"H007:1-34,52"` in Step 2, `"H007:35-51"` in Step 3) so the file evolves cleanly step by step along the timeline!
-- When a single step still contains a **large or dense diff (`>= 20` lines, complex function, tricky SQL, or multi-branch handler)** that belongs together in one view, attach **2–5 `diff_highlights`** (`{"hunk_id": "H007", "lines": "14-29", "title": "...", "explanation": "..."}`) on the non-obvious blocks. Hovering tints that block across green/red/gray lines, and clicking opens a side-margin explanation without covering code. **Do NOT overdo it:** skip short/obvious diffs (`< 20` lines, imports, simple types), and cap at `<= 5` blocks per diff card (`build_artifact.py` rejects `> 5`).
+- **Code notes (`diff_highlights`): explain what a newcomer would have to stop and decode.** A note sits right above the lines it explains, inside the diff. Decide note by note, never by size or quota:
+  - **Add a note** on any block a reviewer who doesn't know this code would have to stop and work out, however short: a non-obvious condition or guard, an order that matters, a query, regex or data-shape transform, a magic number or threshold, retries, caching or concurrency, an error that's swallowed or turned into a fallback, a clever one-liner, or test setup that encodes a business rule.
+  - **Skip** imports, plain wiring, renames, simple types, and code that already reads like English.
+  - **One idea per note:** usually 3–12 lines, and a single line is fine. Split a long function at the points where it starts doing something different; never stretch one note over a whole function (`build_artifact.py` rejects blocks over 40 lines).
+  - **What a note says:** one sentence, two at most (12–60 words), in plain words: what the block does **and** the part that isn't obvious from reading it, such as why it's written this way, which case it handles, or what would break without it. Name concrete values and cases; never just restate identifiers.
+  - **Title:** name the idea in a few words (≤ 8), like a heading a reviewer could skim.
+  - Format: `{"hunk_id": "H007", "lines": "14-29", "title": "...", "explanation": "..."}`; notes on the same lines can't overlap.
 
 #### D. Keep Everything SUPER Casual + Simple English + Formatting Rotation (VERY IMPORTANT RULE)
 - **Keep Everything Super Casual Across the Whole Board:** Every single piece of writing—`overview`, chapter summaries, step titles, `explanation`, `points`, `table`, `diff_highlights`, screenshot `caption`s, `concepts`, `callouts`, and `mechanical`—**MUST sound like a friendly engineer walking a teammate through the code at their desk or on Slack**.
   - **Use natural conversational phrasing:** Use `we`, `you`, and natural contractions (`we're`, `don't`, `it's`, `won't`, `isn't`, `"Right now..."`, `"Heads up:"`, `"If Postgres is down..."`).
   - **Zero stiff or robotic documentation tone:** Never write dry third-person spec prose (*"Defines X before any query logic uses them"*, *"Extends X with Y"*, *"Wires X into the container"*, *"This service is responsible for..."*) or heavy AI words (*orchestrates, leverages, materializes, facilitates, subsequently, aforementioned*). Say *"Sets up the lock table first so..."*, *"Hooks the lock check into `/webhooks`..."*, *"Skips duplicates right away"*.
-- **Short & Simple (`<= 20` words):** One clear idea per sentence using everyday words (*saves, checks, skips, calls, fails, deletes*).
+- **Short & Simple (`<= 20` words):** One clear idea per sentence using everyday words (*saves, checks, skips, calls, fails, deletes*). Code notes are the exception: they may run up to ~60 words so they can say why, not just what.
 - **1-Sentence Invariant & 5-Item Cap:** Step `explanation` MUST be **1 single casual sentence** (BLUF). Cap `points`, `table.rows`, `callouts`, and `untested_gaps` at **<= 5 items**, with <= 1 sentence per item.
 - **Dynamic Visual Modulation (Rotate Containers):** Never write walls of prose. Pair the 1-sentence `explanation` with a compact `table` for state/input->outcome rules, bold-anchored `points` (`{"anchor": "...", "text": "..."}`) for mechanics, `visuals` for UI/Figma screens, and `callouts` only for real risks/assumptions.
 
