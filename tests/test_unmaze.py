@@ -971,9 +971,10 @@ class UnmazeTestSuite(unittest.TestCase):
             self.assertIn("https://claude.ai/artifact/abc", ctx)
             self.assertIn("--refresh", ctx)
             self.assertIn("1 new commit", ctx)
-            # Same commit -> nudged only once (also not again at session start).
+            # Pushing the same commit again doesn't nudge twice...
             self.assertEqual(run_hook(push), "")
-            self.assertEqual(run_hook({"hook_event_name": "SessionStart"}), "")
+            # ...but a new session (or a compacted one) that lost the nudge is reminded again.
+            self.assertIn("1 new commit", run_hook({"hook_event_name": "SessionStart"}))
 
             # Pausing stops nudges for later commits.
             subprocess.run([sys.executable, str(SCRIPTS_DIR / "board_registry.py"), "pause", "--repo", str(repo)],
@@ -1009,6 +1010,96 @@ class UnmazeTestSuite(unittest.TestCase):
         )
         self.assertTrue(board_registry.PUSH_CMD_RE.search("cd x && git push --force-with-lease"))
         self.assertFalse(board_registry.PUSH_CMD_RE.search('git commit -m "push it"'))
+
+    def test_push_detection_handles_quoted_git_options(self) -> None:
+        pushes = [
+            'git -c credential.helper= -c "credential.helper=!f() { echo username=x-access-token; '
+            'echo \\"password=$(gh auth token)\\"; }; f" -c lfs.url=https://github.com/o/r.git/info/lfs '
+            "push --force-with-lease=feat:abc1234 https://github.com/o/r.git HEAD:feat",
+            "git -c user.name='T A' push",
+            'git -c http.extraHeader="Authorization: Bearer x" push origin feat',
+            'GIT_SSH_COMMAND="ssh -i ~/.ssh/k -o IdentitiesOnly=yes" git push -u origin feat',
+        ]
+        for command in pushes:
+            self.assertTrue(board_registry.PUSH_CMD_RE.search(command), command)
+        for command in ['git -c "alias.x=push y" status', 'git log --grep "push it"']:
+            self.assertFalse(board_registry.PUSH_CMD_RE.search(command), command)
+
+    def test_board_registry_follows_pushes_to_a_url(self) -> None:
+        # `git push <url> HEAD:<branch>` updates the remote but not the remote-tracking ref, so
+        # `@{upstream}` keeps pointing at the commit the board was first built from.
+        with tempfile.TemporaryDirectory() as tmp:
+            remote = Path(tmp) / "remote.git"
+            repo = Path(tmp) / "repo"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            repo.mkdir()
+
+            def git(*args: str) -> str:
+                return subprocess.run(
+                    ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+                ).stdout.strip()
+
+            def registry(*args: str) -> str:
+                return subprocess.run(
+                    [sys.executable, str(SCRIPTS_DIR / "board_registry.py"), *args, "--repo", str(repo)],
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+
+            def record(head_sha: str) -> None:
+                (work_dir / "diff-manifest.json").write_text(json.dumps({
+                    "meta": {"head_branch": "feat", "head_sha": head_sha,
+                             "refresh_args": ["--pr", "https://github.com/o/r/pull/7"]}
+                }))
+                registry("record", "--work-dir", str(work_dir), "--url", "https://claude.ai/artifact/abc")
+
+            def run_hook(payload: dict) -> str:
+                return subprocess.run(
+                    [sys.executable, str(SCRIPTS_DIR / "board_registry.py"), "hook"],
+                    input=json.dumps({"cwd": str(repo), **payload}),
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+
+            git("init", "-q", "-b", "feat")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "T")
+            (repo / "a.txt").write_text("one\n")
+            git("add", ".")
+            git("commit", "-q", "-m", "one")
+            git("remote", "add", "origin", str(remote))
+            git("push", "-q", "-u", "origin", "feat")
+            work_dir = Path(registry("work-dir", "--key", "pr-7"))
+            record(git("rev-parse", "HEAD"))
+
+            # The same repository under a URL that differs from origin's, like an HTTPS push to a
+            # remote configured over SSH: git then leaves origin's tracking ref alone.
+            other_url = Path(tmp) / "same-remote.git"
+            other_url.symlink_to(remote)
+
+            def push_to_url() -> dict:
+                command = (
+                    'git -c credential.helper= -c "credential.helper=!f() { echo username=x; '
+                    f'echo \\"password=y\\"; }}; f" push -q {other_url} HEAD:feat'
+                )
+                subprocess.run(command, shell=True, cwd=repo, check=True, capture_output=True)
+                return {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": command}}
+
+            (repo / "a.txt").write_text("two\n")
+            git("commit", "-q", "-am", "two")
+            push = push_to_url()
+            self.assertNotEqual(git("rev-parse", "@{upstream}"), git("rev-parse", "HEAD"))
+            self.assertIn("1 new commit", run_hook(push))
+
+            # The board is refreshed and recorded at the pushed commit: nothing is stale anymore,
+            # even though the remote-tracking ref still points at the first commit.
+            record(git("rev-parse", "HEAD"))
+            self.assertFalse(json.loads(registry("status"))["stale"])
+            self.assertEqual(run_hook({"hook_event_name": "SessionStart"}), "")
+
+            # A nudge the session never acted on is repeated at the next session start.
+            (repo / "a.txt").write_text("three\n")
+            git("commit", "-q", "-am", "three")
+            self.assertIn("1 new commit", run_hook(push_to_url()))
+            self.assertIn("1 new commit", run_hook({"hook_event_name": "SessionStart"}))
 
     def test_step_budget_rejects_over_split_reviews_with_concrete_hints(self) -> None:
         manifest = self._build_sample_manifest()

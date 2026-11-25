@@ -27,8 +27,11 @@ import sys
 import time
 from typing import Any
 
-# `git push`, `git push -u origin x`, `git -C repo push`, `cd a && git push --force-with-lease`
-PUSH_CMD_RE = re.compile(r"\bgit\b(?:\s+-{1,2}[\w-]+(?:[= ]\S+)?)*\s+push\b")
+# A shell word, including quoted parts with spaces: `"credential.helper=!f() { ...; }; f"`.
+_SHELL_WORD = r"""(?:[^\s"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')+"""
+# `git push`, `git push -u origin x`, `git -C repo push`, `cd a && git push --force-with-lease`,
+# `git -c "credential.helper=!f() { ...; }; f" push https://... HEAD:x`
+PUSH_CMD_RE = re.compile(rf"\bgit\b(?:\s+-{{1,2}}[\w-]+(?:[= ]{_SHELL_WORD})?)*\s+push\b")
 SCRIPT_PATH = Path(__file__).resolve()
 
 
@@ -88,7 +91,7 @@ def save_registry(state_dir: Path, data: dict[str, Any]) -> None:
     tmp.replace(state_dir / "boards.json")
 
 
-def board_status(cwd: str) -> dict[str, Any] | None:
+def board_status(cwd: str, *, just_pushed: bool = False) -> dict[str, Any] | None:
     state_dir = git_state_dir(cwd)
     branch = current_branch(cwd)
     if not state_dir or not branch:
@@ -96,8 +99,16 @@ def board_status(cwd: str) -> dict[str, Any] | None:
     entry = load_registry(state_dir)["boards"].get(branch)
     if not isinstance(entry, dict):
         return None
-    now_sha = pushed_sha(cwd)
     built = str(entry.get("built_sha") or "")
+    if just_pushed:
+        # A push to a URL (`git push https://... HEAD:x`) leaves the remote-tracking ref behind.
+        now_sha = _git(["rev-parse", "HEAD"], cwd)
+    else:
+        now_sha = pushed_sha(cwd)
+        if now_sha and now_sha == entry.get("seen_sha"):
+            # The tracking ref hasn't moved since the board was recorded, so the last pushed
+            # commit the hook reported (cleared on every rebuild) is the better guess.
+            now_sha = entry.get("notified_sha") or built
     new_commits = None
     if built and now_sha and built != now_sha:
         count = _git(["rev-list", "--count", f"{built}..{now_sha}"], cwd)
@@ -154,6 +165,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         "url": args.url,
         "work_dir": str(work_dir),
         "built_sha": args.head_sha or meta.get("head_sha") or pushed_sha(args.repo),
+        "seen_sha": pushed_sha(args.repo),
         "pr_url": meta.get("pr_url"),
         "refresh_args": refresh_args,
         "auto_refresh": previous.get("auto_refresh", True),
@@ -234,7 +246,7 @@ def cmd_hook(_: argparse.Namespace) -> int:
         return 0
 
     try:
-        status = board_status(cwd)
+        status = board_status(cwd, just_pushed=event == "PostToolUse")
     except Exception:  # noqa: BLE001 - a hook must never break the session
         return 0
     if (
@@ -242,8 +254,11 @@ def cmd_hook(_: argparse.Namespace) -> int:
         or not status.get("stale")
         or not status.get("auto_refresh", True)
         or not status.get("refresh_args")
-        or status.get("notified_sha") == status.get("current_sha")
     ):
+        return 0
+    # Re-pushing the same commit doesn't repeat the nudge; a new or compacted session, which may
+    # have lost it, gets it again until the board is rebuilt.
+    if event == "PostToolUse" and status.get("notified_sha") == status.get("current_sha"):
         return 0
 
     state_dir = git_state_dir(cwd)
