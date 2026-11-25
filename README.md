@@ -1,5 +1,7 @@
 # unmaze — AI code review guides for big pull requests
 
+### Bringing human code review back to life in the AI era.
+
 **A Claude Code skill that turns any GitHub pull request into a calm, step-by-step code review guide a human can actually follow.**
 
 [![Latest release](https://img.shields.io/github/v/release/t10ko/unmaze?color=4c8bf5)](https://github.com/t10ko/unmaze/releases)
