@@ -1,7 +1,7 @@
 {
   "name": "unmaze",
-  "version": "0.11.1",
-  "description": "Claude Code skill that turns sprawling AI-generated PRs into a shareable, step-by-step review guide in human reading order—not A-to-Z file diffs.",
+  "version": "0.12.0",
+  "description": "AI code review guides for big pull requests: a Claude Code skill that turns any GitHub PR into a shareable, step-by-step review guide with plain notes on tricky code, approvals, checks and comments, and 100% diff coverage.",
   "author": {
     "name": "Tigran Atayan",
     "url": "https://github.com/t10ko"
@@ -11,10 +11,14 @@
   "license": "MIT",
   "keywords": [
     "code-review",
+    "ai-code-review",
     "pull-request",
-    "diff",
-    "artifacts",
+    "pr-review",
+    "github",
     "claude-code",
-    "skills"
+    "claude-skills",
+    "agent-skills",
+    "diff",
+    "artifacts"
   ]
 }
