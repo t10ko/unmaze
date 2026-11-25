@@ -21,7 +21,9 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import board_registry  # noqa: E402
 import build_artifact  # noqa: E402
+import github_panel  # noqa: E402
 import parse_diff  # noqa: E402
+import pr_activity  # noqa: E402
 import refresh_plan  # noqa: E402
 
 
@@ -1302,6 +1304,125 @@ class UnmazeTestSuite(unittest.TestCase):
                     crosses = lo_x < rx + rw and hi_x > rx and lo_y < ry + rh and hi_y > ry
                     self.assertFalse(crosses, f"{edge['from']}->{edge['to']} crosses {nid}")
             self.assertTrue(all(0 <= x <= lay["width"] and 0 <= y <= lay["height"] for x, y in pts))
+
+    def test_pr_activity_snapshot_normalizes_reviews_checks_and_threads(self) -> None:
+        graphql = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": 142,
+                        "state": "OPEN",
+                        "isDraft": False,
+                        "reviewDecision": "CHANGES_REQUESTED",
+                        "headRefOid": "b" * 40,
+                        "latestReviews": {"nodes": [
+                            {"author": {"login": "maya"}, "state": "CHANGES_REQUESTED", "submittedAt": "2026-01-02T00:00:00Z", "url": "https://github.com/a/b/pull/142#r1"},
+                            {"author": {"login": "devon"}, "state": "APPROVED", "submittedAt": "2026-01-01T00:00:00Z", "url": "javascript:alert(1)"},
+                        ]},
+                        "reviewRequests": {"nodes": [
+                            {"requestedReviewer": {"__typename": "Team", "slug": "payments"}},
+                            {"requestedReviewer": {"__typename": "User", "login": "sam"}},
+                        ]},
+                        "reviews": {"nodes": [
+                            {"author": {"login": "maya"}, "state": "COMMENTED", "body": "", "submittedAt": "2026-01-01T01:00:00Z", "url": None},
+                            {"author": {"login": "maya"}, "state": "CHANGES_REQUESTED", "body": "Two asks", "submittedAt": "2026-01-02T00:00:00Z", "url": None},
+                        ]},
+                        "comments": {"nodes": [{"author": None, "body": "hi", "createdAt": "2026-01-01T02:00:00Z", "url": None}]},
+                        "reviewThreads": {"pageInfo": {"hasNextPage": True}, "nodes": [
+                            {"id": "T1", "path": "services/idempotency/store.ts", "line": 22, "startLine": 19, "originalLine": 22,
+                             "diffSide": "RIGHT", "isResolved": False, "isOutdated": False, "subjectType": "LINE",
+                             "comments": {"nodes": [{"author": {"login": "maya"}, "body": "x" * 5000, "createdAt": "2026-01-02T00:00:00Z", "url": None}]}},
+                            {"id": "T2", "path": "a.ts", "line": None, "diffSide": "LEFT", "isResolved": True, "isOutdated": True,
+                             "comments": {"nodes": []}},
+                        ]},
+                        "commits": {"nodes": [{"commit": {"oid": "c" * 40, "statusCheckRollup": {"state": "FAILURE", "contexts": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [
+                                {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "https://ci/1",
+                                 "checkSuite": {"workflowRun": {"workflow": {"name": "CI"}}}},
+                                {"__typename": "CheckRun", "name": "e2e", "status": "IN_PROGRESS", "conclusion": None, "detailsUrl": None},
+                                {"__typename": "CheckRun", "name": "deploy", "status": "COMPLETED", "conclusion": "SKIPPED", "detailsUrl": None},
+                                {"__typename": "StatusContext", "context": "legacy/ci", "state": "ERROR", "targetUrl": "https://ci/2"},
+                            ],
+                        }}}}]},
+                    }
+                }
+            }
+        }
+        snap = pr_activity.normalize_graphql(graphql, fetched_at="2026-01-03T00:00:00Z")
+        self.assertEqual(snap["review_decision"], "CHANGES_REQUESTED")
+        self.assertEqual([r["author"] for r in snap["reviews"]], ["maya", "devon"])
+        self.assertIsNone(snap["reviews"][1]["url"], "non-https links are dropped")
+        self.assertEqual(snap["requested_reviewers"], ["team:payments", "sam"])
+        self.assertEqual(snap["checks"]["summary"], {"passed": 1, "failed": 1, "pending": 1, "skipped": 1, "total": 4})
+        self.assertEqual(snap["checks"]["items"][0]["state"], "failed", "failed checks sort first")
+        self.assertEqual(snap["head_sha"], "c" * 40)
+        self.assertEqual(len(snap["threads"]), 1, "threads without comments are dropped")
+        self.assertTrue(snap["threads_truncated"])
+        self.assertLessEqual(len(snap["threads"][0]["comments"][0]["body"]), pr_activity.MAX_BODY_CHARS)
+        kinds = [(c["kind"], c["author"]) for c in snap["conversation"]]
+        self.assertEqual(kinds, [("comment", "ghost"), ("review", "maya")], "empty COMMENTED review wrappers are skipped")
+
+        self.assertEqual(
+            pr_activity.parse_pr_url("https://github.com/acme/payments/pull/142/files"),
+            {"host": "github.com", "owner": "acme", "repo": "payments", "number": 142,
+             "url": "https://github.com/acme/payments/pull/142"},
+        )
+        self.assertIsNone(pr_activity.parse_pr_url("https://gitlab.com/a/b/-/merge_requests/1"))
+
+        def failing_runner(*_args, **_kwargs):
+            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="auth")
+
+        self.assertIsNone(pr_activity.fetch_pr_activity("https://github.com/a/b/pull/1", runner=failing_runner))
+        self.assertIsNone(pr_activity.fetch_pr_activity("not a url", runner=failing_runner))
+
+    def test_github_review_status_renders_header_threads_and_markdown(self) -> None:
+        manifest = self._build_sample_manifest()
+        validated = build_artifact.validate_and_normalize_plan(
+            manifest, copy.deepcopy(self.sample_plan), search_dirs=[REPO_ROOT / "examples"]
+        )
+        activity = json.loads((REPO_ROOT / "examples" / "sample-activity.json").read_text(encoding="utf-8"))
+        activity["threads"][0]["comments"][0]["body"] = "</script><img src=x onerror=alert(1)>"
+        activity["checks"]["items"].append({"name": "bad", "state": "exploded", "url": None, "group": ""})
+        cfg = github_panel.build_github_config(manifest["meta"], activity)
+        self.assertEqual(cfg["pr"], {"owner": "acme", "repo": "payments", "number": 142,
+                                     "url": "https://github.com/acme/payments/pull/142", "host": "github.com", "head_sha": None})
+        self.assertEqual(cfg["snapshot"]["checks"]["summary"]["total"], 8, "unknown check states are dropped")
+        self.assertTrue(cfg["live_supported"])
+
+        html_out = build_artifact.build_html_artifact(manifest, validated, github_cfg=cfg)
+        self.assertIn('id="gh-status"', html_out)
+        self.assertIn('id="gh-dialog"', html_out)
+        self.assertIn('<script type="application/json" id="gh-data">', html_out)
+        data = re.search(r'<script type="application/json" id="gh-data">(.*?)</script>', html_out, re.S).group(1)
+        self.assertNotIn("</script", data.lower())
+        self.assertEqual(json.loads(data)["snapshot"]["threads"][0]["comments"][0]["body"],
+                         "</script><img src=x onerror=alert(1)>")
+        self.assertIn("Not connected to GitHub", html_out)
+        self.assertIn("Copy & open line on GitHub", html_out)
+        # Cards and rows carry what the page needs to place threads on the right lines.
+        self.assertIn('data-path="services/idempotency/store.ts"', html_out)
+        self.assertRegex(html_out, r'<span class="dl dl-add[^"]*" data-pn="22"')
+        self.assertRegex(html_out, r'<span class="dl dl-del[^"]*" data-po="21"')
+
+        md = build_artifact.build_markdown_summary(manifest, validated, cfg)
+        self.assertIn("## Review status", md)
+        self.assertIn("- **Status:** Changes requested", md)
+        self.assertIn("- **Checks:** 5 passed, 1 failed, 1 running, 1 skipped", md)
+        self.assertIn("- **Open comment threads:** 2 (resolved: 1)", md)
+
+        caps = github_panel.github_capabilities()
+        self.assertEqual(caps["mcp"]["servers"][0]["server"], "GitHub")
+        self.assertIn("add_comment_to_pending_review", caps["mcp"]["servers"][0]["tools"])
+
+        # A board that isn't about a GitHub PR gets none of it; a PR without a snapshot still gets the header.
+        self.assertIsNone(github_panel.build_github_config({"pr_url": None}, activity))
+        plain = build_artifact.build_html_artifact(manifest, validated)
+        self.assertNotIn('id="gh-status"', plain)
+        self.assertNotIn("gh-thread", plain)
+        bare = github_panel.build_github_config(manifest["meta"], None)
+        self.assertIsNone(bare["snapshot"])
+        self.assertIn("No GitHub snapshot was saved", "\n".join(github_panel.render_github_markdown(bare)))
 
 
 if __name__ == "__main__":

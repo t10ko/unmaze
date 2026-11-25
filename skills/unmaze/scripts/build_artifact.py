@@ -27,6 +27,9 @@ from typing import Any
 from urllib.parse import urlparse
 import urllib.request
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import github_panel  # noqa: E402
+
 
 EXPAND_CHUNK = 15
 
@@ -2874,8 +2877,14 @@ def render_code_row_html(
         else ""
     )
 
+    line_attrs = ""
+    if eff_pr_new is not None and new_line is not None:
+        line_attrs += f' data-pn="{int(eff_pr_new)}"'
+    if eff_pr_old is not None and old_line is not None:
+        line_attrs += f' data-po="{int(eff_pr_old)}"'
+
     return (
-        f'<span class="dl {cls}"{extra_attrs}>'
+        f'<span class="dl {cls}"{line_attrs}{extra_attrs}>'
         f"{old_cell}"
         f"{new_cell}"
         f'<span class="sig" aria-hidden="true">{sig}</span>'
@@ -3222,6 +3231,9 @@ def render_timeline_slice_card_html(
         )
 
     area_attr = f' data-area-id="{esc(area_id)}"' if area_id else ""
+    area_attr += f' data-path="{esc(hunk.get("new_path") or fpath)}"'
+    if hunk.get("old_path") and hunk.get("old_path") != (hunk.get("new_path") or fpath):
+        area_attr += f' data-old-path="{esc(hunk["old_path"])}"'
     if collapsed:
         return f"""<article class="hunk-card" id="card-{esc(card_uid)}"{area_attr}>
   <div class="hunk-head">
@@ -3372,6 +3384,7 @@ def build_html_artifact(
     plan: dict[str, Any],
     *,
     search_dirs: list[Path] | None = None,
+    github_cfg: dict[str, Any] | None = None,
 ) -> str:
     asset_dirs = search_dirs or [Path.cwd()]
     meta = manifest["meta"]
@@ -5965,6 +5978,7 @@ def build_html_artifact(
       font-size: 0.75rem;
       color: var(--muted);
     }}
+{github_panel.GH_CSS if github_cfg else ""}
   </style>
 </head>
 <body>
@@ -5984,6 +5998,7 @@ def build_html_artifact(
       </div>
     </div>
     <div class="topbar-right">
+      {github_panel.render_github_header_html(github_cfg)}
       <button type="button" id="mode-toggle" class="icon-btn mode-toggle-btn" aria-pressed="false">All steps</button>
       <button type="button" id="theme-toggle" class="icon-btn" aria-label="Switch color theme">Theme</button>
       {pr_topbar_cta}
@@ -6038,6 +6053,8 @@ def build_html_artifact(
 
   {concept_templates_html}
 
+  {github_panel.render_github_dialog_html(github_cfg)}
+  {github_panel.render_github_data_script(github_cfg)}
   <script>
     (() => {{
       const EXPAND_STEP = {EXPAND_CHUNK};
@@ -6761,12 +6778,15 @@ def build_html_artifact(
       }});
     }})();
   </script>
+  {("<script>" + github_panel.GH_JS + "</script>") if github_cfg else ""}
 </body>
 </html>
 """
 
 
-def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> str:
+def build_markdown_summary(
+    manifest: dict[str, Any], plan: dict[str, Any], github_cfg: dict[str, Any] | None = None
+) -> str:
     meta = manifest["meta"]
     stats = manifest["stats"]
     hunk_map: dict[str, dict[str, Any]] = {h["id"]: h for h in manifest["hunks"]}
@@ -6880,6 +6900,8 @@ def build_markdown_summary(manifest: dict[str, Any], plan: dict[str, Any]) -> st
             lines.append(f"- **{grp['title']}:** {grp.get('reason') or 'Mechanical changes'}")
         lines.append("")
 
+    lines.extend(github_panel.render_github_markdown(github_cfg))
+
     return "\n".join(strip_concept_markup(line) for line in lines) + "\n"
 
 
@@ -6892,6 +6914,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--assets-dir", help="Optional base directory to resolve relative visual screenshot paths")
     parser.add_argument("--out", default=".unmaze/unmaze-review.html")
     parser.add_argument("--markdown-out", default=None, help="Optional output path for the companion Markdown guide")
+    parser.add_argument(
+        "--activity",
+        default=None,
+        help="PR reviews/checks/comments snapshot (default: `pr-activity.json` next to the manifest, if present)",
+    )
+    parser.add_argument(
+        "--github-connector",
+        default=github_panel.DEFAULT_CONNECTOR_NAME,
+        help="Name of the viewer's claude.ai GitHub connector the board uses for live data (default: GitHub)",
+    )
     args = parser.parse_args(argv)
 
     manifest_path = Path(args.manifest)
@@ -6930,7 +6962,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Plan validation error:\n{exc}", file=sys.stderr)
         return 2
 
-    html_content = build_html_artifact(manifest, validated_plan, search_dirs=search_dirs)
+    activity = None
+    activity_path = Path(args.activity) if args.activity else manifest_path.resolve().parent / "pr-activity.json"
+    if activity_path.exists():
+        try:
+            activity = json.loads(activity_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            print(f"Warning: ignoring unreadable GitHub snapshot `{activity_path}`.", file=sys.stderr)
+    elif args.activity:
+        print(f"Warning: GitHub snapshot `{activity_path}` not found; the board will show no snapshot.", file=sys.stderr)
+    github_cfg = github_panel.build_github_config(manifest["meta"], activity, args.github_connector)
+
+    html_content = build_html_artifact(manifest, validated_plan, search_dirs=search_dirs, github_cfg=github_cfg)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html_content, encoding="utf-8")
@@ -6942,11 +6985,20 @@ def main(argv: list[str] | None = None) -> int:
         f"{manifest['stats']['total_hunks']} hunks accounted across {len(validated_plan['steps'])} steps{vis_msg})."
     )
     print(f"✓ Interactive HTML artifact written to: {out_path} ({len(html_content):,} bytes)")
+    if github_cfg:
+        snap = github_cfg.get("snapshot")
+        print(
+            "✓ GitHub review status: "
+            + (f"snapshot from {snap['fetched_at']}" if snap else "no snapshot (header will say so)")
+            + ". Publish with capabilities="
+            + json.dumps(github_panel.github_capabilities(args.github_connector))
+            + " so viewers with a GitHub connector get live data."
+        )
 
     if args.markdown_out:
         md_path = Path(args.markdown_out)
         md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_content = build_markdown_summary(manifest, validated_plan)
+        md_content = build_markdown_summary(manifest, validated_plan, github_cfg)
         md_path.write_text(md_content, encoding="utf-8")
         print(f"✓ Companion Markdown summary written to: {md_path}")
 

@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "fetched_at": "2026-11-25T19:40:00Z",
+  "state": "OPEN",
+  "is_draft": false,
+  "review_decision": "CHANGES_REQUESTED",
+  "mergeable": "MERGEABLE",
+  "head_sha": null,
+  "reviews": [
+    {
+      "author": "maya-backend",
+      "state": "CHANGES_REQUESTED",
+      "submitted_at": "2026-11-25T18:55:00Z",
+      "url": "https://github.com/acme/payments/pull/142#pullrequestreview-1"
+    },
+    {
+      "author": "devon-sre",
+      "state": "APPROVED",
+      "submitted_at": "2026-11-25T17:20:00Z",
+      "url": "https://github.com/acme/payments/pull/142#pullrequestreview-2"
+    }
+  ],
+  "requested_reviewers": ["team:payments-core"],
+  "checks": {
+    "summary": { "passed": 5, "failed": 1, "pending": 1, "skipped": 1, "total": 8 },
+    "items": [
+      { "name": "integration-tests (postgres 16)", "state": "failed", "url": "https://github.com/acme/payments/actions/runs/1", "group": "CI" },
+      { "name": "e2e-webhooks", "state": "pending", "url": "https://github.com/acme/payments/actions/runs/2", "group": "CI" },
+      { "name": "lint", "state": "passed", "url": "https://github.com/acme/payments/actions/runs/3", "group": "CI" },
+      { "name": "typecheck", "state": "passed", "url": "https://github.com/acme/payments/actions/runs/4", "group": "CI" },
+      { "name": "unit-tests", "state": "passed", "url": "https://github.com/acme/payments/actions/runs/5", "group": "CI" },
+      { "name": "migration-dry-run", "state": "passed", "url": "https://github.com/acme/payments/actions/runs/6", "group": "Database" },
+      { "name": "codeql", "state": "passed", "url": "https://github.com/acme/payments/security/code-scanning", "group": "" },
+      { "name": "deploy-preview", "state": "skipped", "url": null, "group": "Deploy" }
+    ],
+    "truncated": false
+  },
+  "threads": [
+    {
+      "id": "PRRT_demo_1",
+      "path": "services/idempotency/store.ts",
+      "line": 22,
+      "start_line": 19,
+      "original_line": 22,
+      "side": "RIGHT",
+      "is_resolved": false,
+      "is_outdated": false,
+      "is_file": false,
+      "comments": [
+        {
+          "author": "maya-backend",
+          "body": "This takes over a claim only when its lease has run out, right? If a worker is just slow (not dead), a second worker can still grab it after 60s. Can we renew the lease while `dispatch` runs, or at least log when a takeover happens?",
+          "created_at": "2026-11-25T18:50:00Z",
+          "url": "https://github.com/acme/payments/pull/142#discussion_r1"
+        },
+        {
+          "author": "alex-author",
+          "body": "Good catch. I'll add a log line on takeover in this PR and open a follow-up for lease renewal.",
+          "created_at": "2026-11-25T19:05:00Z",
+          "url": "https://github.com/acme/payments/pull/142#discussion_r2"
+        }
+      ]
+    },
+    {
+      "id": "PRRT_demo_2",
+      "path": "services/idempotency/store.ts",
+      "line": 31,
+      "start_line": null,
+      "original_line": 31,
+      "side": "RIGHT",
+      "is_resolved": false,
+      "is_outdated": false,
+      "is_file": false,
+      "comments": [
+        {
+          "author": "maya-backend",
+          "body": "Failing open means a DB outage turns dedup off silently. Could we at least count these?\n\n```suggestion\n      // Fail-open so transient DB hiccups do not block webhook ingestion\n      metrics.increment(\"idempotency.fail_open\");\n```",
+          "created_at": "2026-11-25T18:52:00Z",
+          "url": "https://github.com/acme/payments/pull/142#discussion_r3"
+        }
+      ]
+    },
+    {
+      "id": "PRRT_demo_3",
+      "path": "migrations/20261117_webhook_idempotency.sql",
+      "line": 11,
+      "start_line": null,
+      "original_line": 11,
+      "side": "RIGHT",
+      "is_resolved": true,
+      "is_outdated": false,
+      "is_file": false,
+      "comments": [
+        {
+          "author": "devon-sre",
+          "body": "Partial index on CLAIMED rows only — nice, keeps it tiny.",
+          "created_at": "2026-11-25T17:15:00Z",
+          "url": "https://github.com/acme/payments/pull/142#discussion_r4"
+        }
+      ]
+    }
+  ],
+  "threads_truncated": false,
+  "conversation": [
+    {
+      "kind": "review",
+      "author": "devon-sre",
+      "state": "APPROVED",
+      "body": "Migration is additive and the index is partial, so it's safe to run before deploy.",
+      "created_at": "2026-11-25T17:20:00Z",
+      "url": "https://github.com/acme/payments/pull/142#pullrequestreview-2"
+    },
+    {
+      "kind": "review",
+      "author": "maya-backend",
+      "state": "CHANGES_REQUESTED",
+      "body": "Logic looks right. Two asks on the store: log lease takeovers and count fail-open cases.",
+      "created_at": "2026-11-25T18:55:00Z",
+      "url": "https://github.com/acme/payments/pull/142#pullrequestreview-1"
+    },
+    {
+      "kind": "comment",
+      "author": "alex-author",
+      "state": null,
+      "body": "Thanks both! The failing `integration-tests` job is the Postgres 16 image pull timing out; re-running.",
+      "created_at": "2026-11-25T19:10:00Z",
+      "url": "https://github.com/acme/payments/pull/142#issuecomment-3"
+    }
+  ]
+}

@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.11.1"
+  version: "0.12.0"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
@@ -16,6 +16,7 @@ GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at
 - **Big-Picture Overview First, Then "This PR"** (one casual sentence on the **whole task**, then a "This PR" block right under it: what this PR builds, every deployable part it touches, and its ship facts—migrations, flags, config, dependencies, contract changes and deploy order, with "none" said out loud—before one hero screenshot),
 - **Ticket, Design & Spec Links Up Top** (the main ticket, the Figma file and the spec sit as link pills under the Overview title whenever they exist),
 - **Smart Screenshot Grouping** (3+ screenshots in one block become a gallery—one large image plus a captioned thumbnail strip; a before/after pair sits side by side; screenshots never grow taller than ~70% of the window),
+- **GitHub Review Status On the Board** (the top bar shows the PR's approval state, its checks and its open comment threads; comment threads sit right on the lines they're about; any line gets a comment box. Viewers with a claude.ai connector named "GitHub" see live data and post as themselves; everyone else sees a dated snapshot and a "Not connected to GitHub" note, and the comment box copies their text and opens that exact line on GitHub),
 - **Boards That Stay Fresh** (a published board is remembered per branch, and after every later `git push` Claude refreshes it at the same URL without anyone asking for `/unmaze` again),
 - **Super Casual Teammate Voice Everywhere** (written like a teammate walking you through the PR over Slack—contractions, `we`/`you`, zero stiff docs or AI jargon),
 - **Arc-style Chapters** (splitting large PRs into ordered chapters—`Chapter 1`, `Chapter 2`—in a clean sidebar),
@@ -187,13 +188,15 @@ python3 "<SKILL_DIR>/scripts/build_artifact.py" \
   --markdown-out "$WORK_DIR/unmaze-review.md"
 ```
 
+For a GitHub PR, `parse_diff.py` also saves `pr-activity.json` (reviews, approvals, checks and comment threads, via `gh`) next to the manifest, and `build_artifact.py` picks it up on its own; pass `--no-github-activity` to `parse_diff.py` to skip it. When the build prints a `capabilities=` line, keep it for publishing.
+
 If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, too many steps for the step budget, missing ship facts, a missing diagram decision or an ungrounded/unneeded diagram, missing red-marked screenshots, skipped Sweep 1/Sweep 2, or schema error), fix the reported issue and re-run until `✓ Verified 100% diff coverage` succeeds.
 
 ---
 
 ### Step 7: Publish Artifact & Present Concise Summary
 
-1. **Publish via Claude Code `Artifact` tool (Primary):** Read `$WORK_DIR/unmaze-review.html` and invoke the `Artifact` tool so the user receives a live shareable `claude.ai/code/artifact/...` URL.
+1. **Publish via Claude Code `Artifact` tool (Primary):** Read `$WORK_DIR/unmaze-review.html` and invoke the `Artifact` tool so the user receives a live shareable `claude.ai/code/artifact/...` URL. When the build printed a `capabilities=` line (the board is about a GitHub PR), pass that object as the publish's `capabilities` on the **first** publish, so viewers who have a claude.ai connector named "GitHub" get live reviews, checks and comments and can comment from the board. If the publish is refused because of that capability, publish again without `capabilities`: the board still shows the saved snapshot and says it isn't connected. Tell the user in one line that live GitHub data needs each viewer to add GitHub's MCP server (`https://api.githubcopilot.com/mcp/`) as a claude.ai connector named "GitHub", and that this setup isn't verified yet.
 2. **Remember the board for automatic refreshes:** right after publishing, record it so later pushes keep it fresh at the same URL:
    ```bash
    python3 "<SKILL_DIR>/scripts/board_registry.py" record --work-dir "$WORK_DIR" --url "<artifact-url>"
@@ -222,6 +225,6 @@ The plugin's hook watches `git push` (and session start). When the branch moved 
    ```
    Its report lists what you still own: **unclaimed new hunks** (place each in the right step, a new step, or `mechanical`), **steps to re-read** (update their sentence, points, tables, highlights and screenshots to match the new code), **empty steps** (delete them or give them lines) and dropped highlights. Also re-check `overview.footprint`, `overview.ship_facts` and `this_pr_part`. Link any new prose to existing concepts with `[[concept-id|phrase]]`; write a new concept only for a genuinely new term.
 4. **Build** exactly as in Step 6 until `✓ Verified 100% diff coverage`.
-5. **Republish to the same URL:** read the board with the `Artifact` tool (`action: "read"`, `url`), then publish the new HTML with that `url` so every link to it (PR description, Slack) keeps working.
+5. **Republish to the same URL:** read the board with the `Artifact` tool (`action: "read"`, `url`), then publish the new HTML with that `url` so every link to it (PR description, Slack) keeps working. Leave `capabilities` out on a republish: the board keeps the GitHub access it was published with. Re-parsing in step 2 also refreshed the review, checks and comments snapshot.
 6. **Record the new commit:** `python3 "<SKILL_DIR>/scripts/board_registry.py" record --work-dir "$WORK_DIR" --url "<same-url>"`.
 7. Tell the user in one line that the board was refreshed, what changed in it, and its link.

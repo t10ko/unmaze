@@ -71,6 +71,10 @@ GENERATED_SUFFIXES = (
 )
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pr_activity import fetch_pr_activity, parse_pr_url  # noqa: E402
+
+
 def run_cmd(
     cmd: list[str], cwd: str | None = None, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
@@ -1116,6 +1120,11 @@ def main(argv: list[str] | None = None) -> int:
         default=".unmaze",
         help="Directory to write `diff-manifest.json` and `hunks-readable.txt` (default: .unmaze)",
     )
+    parser.add_argument(
+        "--no-github-activity",
+        action="store_true",
+        help="Skip the snapshot of PR reviews, checks and comments (`pr-activity.json`)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -1193,6 +1202,26 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = out_dir / "diff-manifest.json"
     readable_path = out_dir / "hunks-readable.txt"
+    activity_path = out_dir / "pr-activity.json"
+
+    # Review state, checks and comments: a snapshot the board shows when a viewer has no
+    # live GitHub connection. Best-effort; a stale file from an earlier run is removed.
+    activity_note = None
+    if parse_pr_url(meta.get("pr_url")) and not args.no_github_activity:
+        activity = fetch_pr_activity(meta.get("pr_url"), cwd=repo_abs if os.path.isdir(repo_abs) else None)
+        if activity is not None:
+            activity_path.write_text(json.dumps(activity, indent=2), encoding="utf-8")
+            meta["activity_file"] = activity_path.name
+            summary = activity["checks"]["summary"]
+            activity_note = (
+                f"GitHub snapshot written to: {activity_path} "
+                f"(review: {activity['review_decision'] or 'none'}, checks: {summary['passed']} passed, "
+                f"{summary['failed']} failed, {summary['pending']} running; {len(activity['threads'])} comment threads)"
+            )
+        else:
+            activity_note = "GitHub snapshot skipped: could not read reviews, checks or comments via `gh`."
+    if "activity_file" not in meta and activity_path.exists():
+        activity_path.unlink()
 
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     readable_path.write_text(format_readable_digest(manifest), encoding="utf-8")
@@ -1200,6 +1229,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Parsed {len(files)} files and {len(hunks)} hunks (+{total_add} / -{total_del}).")
     print(f"Manifest written to: {manifest_path}")
     print(f"Readable digest written to: {readable_path}")
+    if activity_note:
+        print(activity_note)
     print("\nFile summary:")
     for f in files:
         print(
