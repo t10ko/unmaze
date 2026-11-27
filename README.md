@@ -18,6 +18,7 @@ AI agents now write a 1,500-line pull request across 25 files in two minutes. No
 - **The story first:** what the whole task is, what *this* PR does, which services it touches and what has to happen at deploy time.
 - **Then the code, in the order it makes sense:** data shapes before logic, logic before wiring, tests next to the code they prove.
 - **Plain notes on the hard parts**, the PR's approvals, checks and comments right on the page, and a check that **every changed line** made it into the guide.
+- **Proof it works:** when someone ran end-to-end checks on the PR, a "Tested end to end" section shows each one in plain words, with a GIF of every browser step.
 
 It does not replace your reviewers or leave bot comments on your PR. It helps a human understand the change fast enough to review it properly.
 

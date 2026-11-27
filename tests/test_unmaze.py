@@ -1477,6 +1477,341 @@ class UnmazeTestSuite(unittest.TestCase):
             self.assertEqual(tail[:3], ["", "---", ""], "a blank line keeps the divider from turning text into a heading")
             self.assertTrue(tail[3].startswith(f"<sub>Made with [unmaze]({home}), "), tail[3])
 
+    # --- "Tested end to end" section -------------------------------------------------------
+
+    TINY_GIF = (
+        b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00"
+        b",\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+    )
+    TESTED_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+    def _e2e_results(self) -> dict:
+        return {
+            "tested_sha": self.TESTED_SHA,
+            "tested_at": "2026-11-27T12:00:00Z",
+            "environment": "Local app, Chrome",
+            "summary": "We checked duplicate webhooks end to end; one API check failed.",
+            "scenarios": [
+                {
+                    "id": "S1",
+                    "title": "A retried webhook shows the deduplicated badge",
+                    "why": "Support would see the same payment twice if this broke.",
+                    "kind": "browser",
+                    "status": "pass",
+                    "files": ["services/idempotency/store.ts"],
+                    "steps": [
+                        {"action": "Open the payments page", "expected": "The page loads", "status": "pass",
+                         "gif": "media/S1-step1.gif"},
+                        {"action": "Send the same webhook twice", "expected": "One row with a badge", "status": "pass"},
+                    ],
+                },
+                {
+                    "id": "S2",
+                    "title": "The webhook route answers duplicates with 200",
+                    "why": "Stripe would retry forever on a 500.",
+                    "kind": "api",
+                    "status": "fail",
+                    "note": "The second call returned 500.",
+                    "steps": [
+                        {"action": "Call POST /webhooks/stripe twice", "expected": "HTTP 200 both times", "status": "fail",
+                         "request": "POST /webhooks/stripe\n{\"id\": \"evt_1\"}", "response": "HTTP 500\n{\"error\": \"boom\"}"},
+                    ],
+                },
+                {
+                    "id": "S3",
+                    "title": "Expired claims get picked up again",
+                    "why": "A crashed worker would block the event forever.",
+                    "kind": "job",
+                    "status": "skipped",
+                    "note": "No worker runs locally.",
+                    "steps": [{"action": "Wait 60 seconds", "expected": "The job retries", "status": "skipped"}],
+                },
+            ],
+        }
+
+    def _e2e_build(self, tmp_path: Path, results: dict | None, *, asset_urls: dict | None = None,
+                   with_pr: bool = True, head_sha: str | None = None, gif: bool = True) -> tuple[subprocess.CompletedProcess, Path]:
+        work = tmp_path / "work"
+        if not (work / "diff-manifest.json").exists():
+            cmd = [sys.executable, str(SCRIPTS_DIR / "parse_diff.py"), "--patch", str(REPO_ROOT / "examples" / "sample-hairball.patch"),
+                   "--context-dir", str(REPO_ROOT / "examples" / "sample-context"), "--out-dir", str(work)]
+            if with_pr:
+                cmd += ["--pr-url", "https://github.com/acme/payments/pull/142"]
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            self.assertEqual(res.returncode, 0, res.stderr)
+        manifest_path = work / "diff-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["meta"]["head_sha"] = head_sha
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        cmd = [sys.executable, str(SCRIPTS_DIR / "build_artifact.py"), "--manifest", str(manifest_path),
+               "--plan", str(REPO_ROOT / "examples" / "sample-plan.json"), "--assets-dir", str(REPO_ROOT / "examples"),
+               "--out", str(work / "review.html"), "--markdown-out", str(work / "review.md")]
+        if with_pr:
+            cmd += ["--activity", str(REPO_ROOT / "examples" / "sample-activity.json")]
+        if results is not None:
+            res_dir = tmp_path / "e2e"
+            (res_dir / "media").mkdir(parents=True, exist_ok=True)
+            if gif:
+                (res_dir / "media" / "S1-step1.gif").write_bytes(self.TINY_GIF)
+            (res_dir / "results.json").write_text(json.dumps(results), encoding="utf-8")
+            cmd += ["--e2e-results", str(res_dir / "results.json")]
+        if asset_urls is not None:
+            (tmp_path / "asset-urls.json").write_text(json.dumps(asset_urls), encoding="utf-8")
+            cmd += ["--asset-urls", str(tmp_path / "asset-urls.json")]
+        return subprocess.run(cmd, capture_output=True, text=True, check=False), work
+
+    @staticmethod
+    def _stdout_capabilities(stdout: str) -> dict | None:
+        lines = [ln for ln in stdout.splitlines() if "capabilities=" in ln]
+        if not lines:
+            return None
+        return json.loads(re.search(r"capabilities=(\{.*\})", lines[0]).group(1))
+
+    def test_e2e_results_render_section_sidebar_pill_and_uploaded_gif(self) -> None:
+        gif_sha = hashlib.sha256(self.TINY_GIF).hexdigest()
+        gif_url = "https://claude.ai/_blob/s1-step1.gif"
+        with tempfile.TemporaryDirectory() as tmp:
+            res, work = self._e2e_build(Path(tmp), self._e2e_results(), asset_urls={gif_sha: gif_url})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            html_out = (work / "review.html").read_text(encoding="utf-8")
+            md = (work / "review.md").read_text(encoding="utf-8")
+
+        # Sidebar: after the chapters, before the Appendix, with a pass count badge.
+        e2e_tab = re.search(r'<button type="button" class="arc-tab arc-tab-e2e" data-panel-index="(\d+)">(.*?)</button>', html_out, re.S)
+        self.assertIsNotNone(e2e_tab)
+        self.assertEqual(e2e_tab.group(1), "6", "5 steps, then the checks, then the Appendix")
+        self.assertIn("Tested end to end", e2e_tab.group(2))
+        self.assertIn(">1/3<", e2e_tab.group(2))
+        self.assertLess(html_out.index("arc-tab-e2e"), html_out.index('<span class="arc-tab-label">Appendix'))
+        self.assertIn('id="step-e2e" data-step-id="step-e2e" data-panel-index="6"', html_out)
+        self.assertIn('id="step-mechanical" data-step-id="step-mechanical" data-panel-index="7"', html_out)
+        self.assertLess(html_out.index('id="step-e2e"'), html_out.index('id="step-mechanical"'))
+        # The last step leads into the checks, the checks lead into the Appendix.
+        self.assertIn('data-default-label="Tested end to end →" data-goto-index="6"', html_out)
+        self.assertIn('data-default-label="Appendix (2) →" data-goto-index="7"', html_out)
+
+        # Overview pill links to the section; failures red, skipped gray.
+        pill = re.search(r'<button type="button" class="e2e-pill[^"]*" data-goto-index="6">(.*?)</button>', html_out, re.S)
+        self.assertIsNotNone(pill)
+        self.assertIn("Tested end to end: 1 of 3 passed", re.sub(r"<[^>]+>", "", pill.group(1)))
+        self.assertIn('class="e2e-pill-fail">1 failed', pill.group(1))
+        self.assertIn('class="e2e-pill-skip">1 skipped', pill.group(1))
+        self.assertLess(html_out.index("e2e-pill"), html_out.index('class="this-pr-block"'))
+
+        # Header, cards (failures first, then skipped, then passed), kinds in plain words.
+        self.assertIn("We checked duplicate webhooks end to end; one API check failed.", html_out)
+        self.assertIn("Local app, Chrome", html_out)
+        self.assertIn("Tested on commit <code>0123456</code> · Nov 27, 2026 12:00 UTC", html_out)
+        self.assertNotIn("older commit", html_out, "no head commit known, so no warning")
+        order = [html_out.index(f'id="e2e-{sid}"') for sid in ("S2", "S3", "S1")]
+        self.assertEqual(order, sorted(order))
+        for kind in ("In the browser", "Through the API", "Background job"):
+            self.assertIn(kind, html_out)
+        self.assertIn("The second call returned 500.", html_out)
+
+        # Step GIF from --asset-urls, opening in the existing zoom; API step request/response collapsed.
+        self.assertRegex(html_out, r'<img src="' + re.escape(gif_url) + r'" loading="lazy" alt="[^"]+" width="1" height="1">')
+        gif_card = html_out[html_out.index('class="visual-card e2e-gif"'):]
+        self.assertIn('class="vis-zoom-btn e2e-gif-open"', gif_card[:400])
+        self.assertNotIn("GIF appears after upload", html_out)
+        self.assertRegex(html_out, r'<details class="e2e-io">\s*<summary>Request and response</summary>')
+        self.assertIn("HTTP 500", html_out)
+
+        # "Proves the code in" links to the steps whose diff covers the listed files.
+        proves = re.search(r'<p class="e2e-proves">(.*?)</p>', html_out, re.S).group(1)
+        self.assertIn('data-goto-step="step-2"', proves)
+        self.assertIn('data-goto-step="step-3"', proves)
+        self.assertNotIn('data-goto-step="step-1"', proves)
+        self.assertEqual(html_out.count('class="e2e-proves"'), 1, "omitted for scenarios without matching files")
+
+        # stdout: nothing left to upload; capabilities keeps GitHub and adds assets.
+        self.assertNotIn("e2e-uploads=", res.stdout)
+        caps = self._stdout_capabilities(res.stdout)
+        self.assertEqual(caps["assets"], {})
+        self.assertEqual(caps["mcp"]["servers"][0]["server"], "GitHub")
+
+        # Markdown summary
+        self.assertIn("## Tested end to end", md)
+        self.assertIn("We checked duplicate webhooks end to end; one API check failed.", md)
+        self.assertIn("Tested on commit `0123456`", md)
+        self.assertIn("| Scenario | How | Result |", md)
+        self.assertIn(f"[step 1]({gif_url})", md)
+        self.assertIn("| The webhook route answers duplicates with 200 | Through the API | Failed: The second call returned 500. |", md)
+        self.assertLess(md.index("## Tested end to end"), md.index("## Appendix"))
+
+    def test_e2e_gif_without_url_gets_placeholder_and_upload_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            gif_sha = hashlib.sha256(self.TINY_GIF).hexdigest()
+            res, work = self._e2e_build(Path(tmp), self._e2e_results(), with_pr=False,
+                                        asset_urls={gif_sha: "javascript:alert(1)", "f" * 64: "https://claude.ai/_blob/x"})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            html_out = (work / "review.html").read_text(encoding="utf-8")
+            gif_path = str((Path(tmp) / "e2e" / "media" / "S1-step1.gif").resolve())
+
+        self.assertIn("GIF appears after upload", html_out)
+        self.assertNotIn("javascript:alert(1)", html_out, "only https:// and /_blob/ URLs are used")
+        upload_lines = [ln for ln in res.stdout.splitlines() if ln.startswith("e2e-uploads=")]
+        self.assertEqual(len(upload_lines), 1)
+        self.assertEqual(json.loads(upload_lines[0].removeprefix("e2e-uploads=")), [gif_path])
+        self.assertEqual(self._stdout_capabilities(res.stdout), {"assets": {}}, "printed even without a GitHub PR")
+
+        # A /_blob/ path counts as uploaded.
+        with tempfile.TemporaryDirectory() as tmp:
+            res2, work2 = self._e2e_build(Path(tmp), self._e2e_results(), with_pr=False,
+                                          asset_urls={gif_sha: "/_blob/abc"})
+            self.assertEqual(res2.returncode, 0, res2.stderr)
+            self.assertIn('<img src="/_blob/abc" loading="lazy"', (work2 / "review.html").read_text(encoding="utf-8"))
+            self.assertNotIn("e2e-uploads=", res2.stdout)
+
+        # No GIF at all: no upload line and no assets capability.
+        results = self._e2e_results()
+        del results["scenarios"][0]["steps"][0]["gif"]
+        with tempfile.TemporaryDirectory() as tmp:
+            res3, _ = self._e2e_build(Path(tmp), results, with_pr=False, gif=False)
+            self.assertEqual(res3.returncode, 0, res3.stderr)
+            self.assertNotIn("e2e-uploads=", res3.stdout)
+            self.assertNotIn("capabilities=", res3.stdout)
+
+    def test_e2e_record_urls_merges_by_sha256(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            gif = tmp_path / "a.gif"
+            gif.write_bytes(self.TINY_GIF)
+            urls = tmp_path / "asset-urls.json"
+            urls.write_text(json.dumps({"f" * 64: "https://claude.ai/_blob/old"}), encoding="utf-8")
+            script = str(SCRIPTS_DIR / "e2e_results.py")
+            res = subprocess.run([sys.executable, script, "record-urls", "--asset-urls", str(urls), f"{gif}=/_blob/new"],
+                                 capture_output=True, text=True, check=False)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(json.loads(urls.read_text(encoding="utf-8")),
+                             {"f" * 64: "https://claude.ai/_blob/old", hashlib.sha256(self.TINY_GIF).hexdigest(): "/_blob/new"})
+            bad = subprocess.run([sys.executable, script, "record-urls", "--asset-urls", str(urls), f"{gif}=http://x/y"],
+                                 capture_output=True, text=True, check=False)
+            self.assertEqual(bad.returncode, 2)
+
+    def test_e2e_stale_commit_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            res, work = self._e2e_build(Path(tmp), self._e2e_results(), head_sha="fedcba9876543210fedcba9876543210fedcba98")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            html_out = (work / "review.html").read_text(encoding="utf-8")
+            md = (work / "review.md").read_text(encoding="utf-8")
+        self.assertIn("These checks ran on an older commit (0123456), not the latest one (fedcba9).", html_out)
+        self.assertIn("These checks ran on an older commit (0123456), not the latest one (fedcba9).", md)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            res, work = self._e2e_build(Path(tmp), self._e2e_results(), head_sha=self.TESTED_SHA)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertNotIn("older commit", (work / "review.html").read_text(encoding="utf-8"))
+
+    def test_e2e_results_validation_failures_exit_2(self) -> None:
+        def broken(mutate) -> dict:
+            results = self._e2e_results()
+            mutate(results)
+            return results
+
+        def dup_ids(r: dict) -> None:
+            r["scenarios"][1]["id"] = "S1"
+
+        def pop(path: list, key: str):
+            def _m(r: dict) -> None:
+                target = r
+                for part in path:
+                    target = target[part]
+                del target[key]
+            return _m
+
+        def setv(path: list, key: str, value):
+            def _m(r: dict) -> None:
+                target = r
+                for part in path:
+                    target = target[part]
+                target[key] = value
+            return _m
+
+        cases = [
+            (pop([], "tested_sha"), "tested_sha"),
+            (pop([], "summary"), "summary"),
+            (pop([], "scenarios"), "scenarios"),
+            (setv([], "scenarios", []), "scenarios"),
+            (pop(["scenarios", 0], "id"), "`id`"),
+            (pop(["scenarios", 0], "title"), "`title`"),
+            (pop(["scenarios", 0], "why"), "`why`"),
+            (pop(["scenarios", 0], "kind"), "`kind`"),
+            (pop(["scenarios", 0], "status"), "`status`"),
+            (setv(["scenarios", 0], "steps", []), "at least one step"),
+            (pop(["scenarios", 0, "steps", 1], "action"), "`action`"),
+            (pop(["scenarios", 0, "steps", 1], "expected"), "`expected`"),
+            (pop(["scenarios", 0, "steps", 1], "status"), "`status`"),
+            (setv(["scenarios", 0], "kind", "desktop"), "browser, api, job"),
+            (setv(["scenarios", 0], "status", "passed"), "pass, fail, skipped"),
+            (setv(["scenarios", 0, "steps", 0], "status", "ok"), "pass, fail, skipped"),
+            (dup_ids, "duplicate scenario id `S1`"),
+            (setv(["scenarios", 1], "note", ""), "needs a `note`"),
+            (pop(["scenarios", 2], "note"), "needs a `note`"),
+            (setv(["scenarios", 0, "steps", 0], "gif", "media/missing.gif"), "media/missing.gif"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            for mutate, expected in cases:
+                res, _ = self._e2e_build(Path(tmp), broken(mutate))
+                self.assertEqual(res.returncode, 2, f"{expected}: {res.stdout}{res.stderr}")
+                self.assertIn("E2E results error", res.stderr)
+                self.assertIn(expected, res.stderr)
+            (Path(tmp) / "e2e" / "results.json").write_text("{not json", encoding="utf-8")
+            res = subprocess.run(
+                [sys.executable, str(SCRIPTS_DIR / "build_artifact.py"), "--manifest", str(Path(tmp) / "work" / "diff-manifest.json"),
+                 "--plan", str(REPO_ROOT / "examples" / "sample-plan.json"), "--assets-dir", str(REPO_ROOT / "examples"),
+                 "--out", str(Path(tmp) / "x.html"), "--e2e-results", str(Path(tmp) / "e2e" / "results.json")],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(res.returncode, 2)
+            self.assertIn("E2E results error", res.stderr)
+
+    def test_e2e_results_strings_are_escaped(self) -> None:
+        evil = "<script>e2e()</script>"
+        results = self._e2e_results()
+        results["summary"] = f"Summary {evil}"
+        results["environment"] = f"Env <img src=x onerror=alert(1)>"
+        sc = results["scenarios"][1]
+        sc.update({"id": "S2\"><b>", "title": f"T {evil}", "why": f"W {evil}", "note": f"N {evil}", "files": [f"x{evil}.ts"]})
+        sc["steps"][0].update({"action": f"A {evil}", "expected": f"E {evil}", "request": f"R {evil}", "response": f"P {evil}"})
+        with tempfile.TemporaryDirectory() as tmp:
+            res, work = self._e2e_build(Path(tmp), results)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            html_out = (work / "review.html").read_text(encoding="utf-8")
+        self.assertNotIn(evil, html_out)
+        self.assertNotIn("<img src=x onerror=alert(1)>", html_out)
+        self.assertNotIn('S2"><b>', html_out)
+        self.assertIn("T &lt;script&gt;e2e()&lt;/script&gt;", html_out)
+        self.assertIn("P &lt;script&gt;e2e()&lt;/script&gt;", html_out)
+
+    def test_board_without_e2e_results_is_unchanged(self) -> None:
+        # The sample snapshot has a check named "e2e-webhooks", so match the section's own markup.
+        markers = ("Tested end to end", ".e2e-", 'class="e2e', "arc-tab-e2e", "step-e2e")
+        for with_pr in (True, False):
+            with tempfile.TemporaryDirectory() as tmp:
+                res, work = self._e2e_build(Path(tmp), None, with_pr=with_pr)
+                self.assertEqual(res.returncode, 0, res.stderr)
+                html_out = (work / "review.html").read_text(encoding="utf-8")
+                md = (work / "review.md").read_text(encoding="utf-8")
+            for marker in markers:
+                self.assertNotIn(marker, html_out)
+                self.assertNotIn(marker, md)
+            self.assertNotIn("e2e-uploads=", res.stdout)
+            stdout_lines = [ln.split(" ")[1] if ln.startswith("✓") else ln for ln in res.stdout.splitlines()]
+            self.assertEqual(stdout_lines, ["Verified", "Interactive"] + (["GitHub"] if with_pr else []) + ["Companion"])
+            if with_pr:
+                self.assertNotIn("assets", self._stdout_capabilities(res.stdout))
+            else:
+                self.assertIsNone(self._stdout_capabilities(res.stdout))
+
+        manifest = self._build_sample_manifest()
+        validated = build_artifact.validate_and_normalize_plan(
+            manifest, copy.deepcopy(self.sample_plan), search_dirs=[REPO_ROOT / "examples"]
+        )
+        self.assertEqual(build_artifact.build_html_artifact(manifest, validated),
+                         build_artifact.build_html_artifact(manifest, validated, e2e=None))
+
 
 if __name__ == "__main__":
     unittest.main()

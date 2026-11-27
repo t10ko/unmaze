@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import e2e_results  # noqa: E402
 import github_panel  # noqa: E402
 
 
@@ -3384,12 +3385,22 @@ def render_concept_templates_html(
     return "\n".join(tpls)
 
 
+def render_appendix_next_btn(mech_slice_count: int, mech_idx: int) -> str:
+    label = f"Appendix ({mech_slice_count}) →"
+    return (
+        f'<button type="button" class="nav-btn" data-nav-dir="next" '
+        f'data-default-label="{label}" data-goto-index="{mech_idx}">'
+        f"{label}</button>"
+    )
+
+
 def build_html_artifact(
     manifest: dict[str, Any],
     plan: dict[str, Any],
     *,
     search_dirs: list[Path] | None = None,
     github_cfg: dict[str, Any] | None = None,
+    e2e: dict[str, Any] | None = None,
 ) -> str:
     asset_dirs = search_dirs or [Path.cwd()]
     meta = manifest["meta"]
@@ -3426,6 +3437,9 @@ def build_html_artifact(
     mech_groups: list[dict[str, Any]] = (plan.get("mechanical") or {}).get("groups") or []
     mech_slice_count = sum(len(g["_slices"]) for g in mech_groups)
     total_main_steps = len(steps)
+    # Panel order: Overview, steps, "Tested end to end" (when present), Appendix.
+    e2e_idx = total_main_steps + 1
+    mech_idx = total_main_steps + (2 if e2e else 1)
 
     # Map chapters (`Chapter 1`, `Chapter 2`, ...)
     chapters: list[dict[str, Any]] = plan.get("chapters") or []
@@ -3565,9 +3579,9 @@ def build_html_artifact(
                 f"</button>"
             )
 
+    e2e_tab_html = e2e_results.render_sidebar_tab_html(e2e, e2e_idx) if e2e else ""
     mech_tab_html = ""
     if mech_groups:
-        mech_idx = total_main_steps + 1
         mech_tab_html = (
             f'<button type="button" class="arc-tab arc-tab-muted" data-panel-index="{mech_idx}">'
             f'<span class="arc-ch-num">⚙</span>'
@@ -3599,6 +3613,7 @@ def build_html_artifact(
     this_pr_block_html = render_this_pr_block_html(
         overview, build_change_footprint(manifest, plan), concept_lookup
     )
+    e2e_pill_html = e2e_results.render_overview_pill_html(e2e, e2e_idx) if e2e else ""
 
     concepts_bar_html = ""
     if concepts:
@@ -3648,7 +3663,7 @@ def build_html_artifact(
         {source_links_html}
         <p class="lead-text">{fmt_prose(overview['whole_task'], concept_lookup)}</p>
         {global_ctx_p}
-        {this_pr_block_html}
+        {e2e_pill_html}{this_pr_block_html}
         {overview_visuals_html}
         <div class="before-after">
           <div class="ba-item">
@@ -3768,13 +3783,15 @@ def build_html_artifact(
                 f'data-default-label="{next_label}" data-goto-index="{idx + 1}">'
                 f"{next_label}</button>"
             )
-        elif mech_groups:
-            def_mech_lbl = f"Appendix ({mech_slice_count}) →"
+        elif e2e:
+            e2e_lbl = f"{e2e_results.SECTION_TITLE} →"
             next_btn = (
-                f'<button type="button" class="nav-btn" data-nav-dir="next" '
-                f'data-default-label="{def_mech_lbl}" data-goto-index="{total_main_steps + 1}">'
-                f"{def_mech_lbl}</button>"
+                f'<button type="button" class="nav-btn nav-btn-primary" data-nav-dir="next" '
+                f'data-default-label="{e2e_lbl}" data-goto-index="{e2e_idx}">'
+                f"{e2e_lbl}</button>"
             )
+        elif mech_groups:
+            next_btn = render_appendix_next_btn(mech_slice_count, mech_idx)
         else:
             next_btn = '<span class="done-badge" data-done-slot="true">✓ Review complete</span>'
 
@@ -3804,9 +3821,34 @@ def build_html_artifact(
     </section>"""
         )
 
+    # --- Optional Panel: "Tested end to end" ---
+    if e2e:
+        step_files = [
+            (st["id"], step_title_by_id[st["id"]], {hunk_map[sl["hunk_id"]]["file_path"] for sl in st["_slices"]})
+            for st in steps
+        ]
+        all_area_ids = ",".join(a["id"] for s_node in surfaces_tree for a in s_node["areas"])
+        e2e_next_btn = (
+            render_appendix_next_btn(mech_slice_count, mech_idx)
+            if mech_groups
+            else '<span class="done-badge" data-done-slot="true">✓ Review complete</span>'
+        )
+        panels_html.append(
+            f"""<section class="step-panel" id="step-e2e" data-step-id="step-e2e" data-panel-index="{e2e_idx}" data-chapter-id="" data-area-ids="{esc(all_area_ids)}" aria-labelledby="heading-e2e" hidden="until-found">
+      <div class="step-card">
+        <div class="outside-filter-banner" hidden>Showing checks outside your active area filter.</div>
+        <p class="eyebrow">{esc(e2e_results.render_eyebrow_text(e2e))}</p>
+        {e2e_results.render_section_body_html(e2e, step_files)}
+        <div class="step-footer">
+          <button type="button" class="nav-btn" data-nav-dir="prev" data-goto-index="{total_main_steps}">← Previous</button>
+          <span class="step-next-wrap">{e2e_next_btn}</span>
+        </div>
+      </div>
+    </section>"""
+        )
+
     # --- Optional Last Panel: Mechanical / Boilerplate ---
     if mech_groups:
-        mech_idx = total_main_steps + 1
         mech_timeline_order = total_main_steps + 1
         mech_blocks: list[str] = []
         for grp in mech_groups:
@@ -3852,7 +3894,7 @@ def build_html_artifact(
           <button type="button" class="ctx-btn filtered-cards-toggle">Show anyway</button>
         </div>
         <div class="step-footer">
-          <button type="button" class="nav-btn" data-nav-dir="prev" data-goto-index="{total_main_steps}">← Previous</button>
+          <button type="button" class="nav-btn" data-nav-dir="prev" data-goto-index="{mech_idx - 1}">← Previous</button>
           <span class="done-badge">✓ 100% of PR diff accounted</span>
         </div>
       </div>
@@ -5914,7 +5956,7 @@ def build_html_artifact(
     }}
     .foot-credit {{ margin: 0.45rem 0 0; }}
     .foot-credit a {{ color: inherit; font-weight: 650; text-underline-offset: 2px; }}
-{github_panel.GH_CSS if github_cfg else ""}
+{github_panel.GH_CSS if github_cfg else ""}{e2e_results.E2E_CSS if e2e else ""}
   </style>
 </head>
 <body>
@@ -5951,7 +5993,7 @@ def build_html_artifact(
       <div class="arc-section-lbl">{section_heading}</div>
       <div class="arc-tabs-scroll">
         {"".join(arc_nav_items)}
-        {mech_tab_html}
+        {e2e_tab_html}{mech_tab_html}
       </div>
     </nav>
 
@@ -6677,14 +6719,17 @@ def build_html_artifact(
       }});
     }})();
   </script>
-  {("<script>" + github_panel.GH_JS + "</script>") if github_cfg else ""}
+  {("<script>" + github_panel.GH_JS + "</script>") if github_cfg else ""}{e2e_results.render_script(e2e_idx) if e2e else ""}
 </body>
 </html>
 """
 
 
 def build_markdown_summary(
-    manifest: dict[str, Any], plan: dict[str, Any], github_cfg: dict[str, Any] | None = None
+    manifest: dict[str, Any],
+    plan: dict[str, Any],
+    github_cfg: dict[str, Any] | None = None,
+    e2e: dict[str, Any] | None = None,
 ) -> str:
     meta = manifest["meta"]
     stats = manifest["stats"]
@@ -6792,6 +6837,9 @@ def build_markdown_summary(
             lines.append(f"- {ref}")
         lines.append("")
 
+    if e2e:
+        lines.extend(e2e_results.render_markdown(e2e))
+
     mech_groups = (plan.get("mechanical") or {}).get("groups") or []
     if mech_groups:
         lines.append(f"## Appendix: docs, records & boilerplate ({stats['total_hunks']}/{stats['total_hunks']} hunks accounted)")
@@ -6824,6 +6872,16 @@ def main(argv: list[str] | None = None) -> int:
         "--github-connector",
         default=github_panel.DEFAULT_CONNECTOR_NAME,
         help="Name of the viewer's claude.ai GitHub connector the board uses for live data (default: GitHub)",
+    )
+    parser.add_argument(
+        "--e2e-results",
+        default=None,
+        help='End-to-end check results to show in a "Tested end to end" section (format: references/e2e-results.md)',
+    )
+    parser.add_argument(
+        "--asset-urls",
+        default=None,
+        help="JSON object mapping each step GIF's sha256 to its URL in the Artifact's asset store (a missing file means none yet)",
     )
     args = parser.parse_args(argv)
 
@@ -6874,7 +6932,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Warning: GitHub snapshot `{activity_path}` not found; the board will show no snapshot.", file=sys.stderr)
     github_cfg = github_panel.build_github_config(manifest["meta"], activity, args.github_connector)
 
-    html_content = build_html_artifact(manifest, validated_plan, search_dirs=search_dirs, github_cfg=github_cfg)
+    e2e = None
+    if args.e2e_results:
+        input_path = Path(args.e2e_results)
+        try:
+            results = e2e_results.load_results(input_path)
+            if args.asset_urls:
+                input_path = Path(args.asset_urls)
+                asset_urls = e2e_results.load_asset_urls(input_path)
+            else:
+                asset_urls = {}
+        except e2e_results.E2EResultsError as exc:
+            print(f"E2E results error in `{input_path}`:\n{exc}", file=sys.stderr)
+            return 2
+        e2e = e2e_results.prepare(results, asset_urls, manifest["meta"].get("head_sha"))
+    elif args.asset_urls:
+        print("Warning: `--asset-urls` does nothing without `--e2e-results`.", file=sys.stderr)
+
+    html_content = build_html_artifact(
+        manifest, validated_plan, search_dirs=search_dirs, github_cfg=github_cfg, e2e=e2e
+    )
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html_content, encoding="utf-8")
@@ -6886,20 +6963,26 @@ def main(argv: list[str] | None = None) -> int:
         f"{manifest['stats']['total_hunks']} hunks accounted across {len(validated_plan['steps'])} steps{vis_msg})."
     )
     print(f"✓ Interactive HTML artifact written to: {out_path} ({len(html_content):,} bytes)")
+    # Step GIFs live in the Artifact's asset store, which the page has to declare.
+    asset_caps = {"assets": {}} if e2e and e2e["has_gif"] else {}
     if github_cfg:
         snap = github_cfg.get("snapshot")
         print(
             "✓ GitHub review status: "
             + (f"snapshot from {snap['fetched_at']}" if snap else "no snapshot (header will say so)")
             + ". Publish with capabilities="
-            + json.dumps(github_panel.github_capabilities(args.github_connector))
+            + json.dumps({**github_panel.github_capabilities(args.github_connector), **asset_caps})
             + " so viewers with a GitHub connector get live data."
         )
+    elif asset_caps:
+        print(f"✓ Step GIFs come from the board's asset store. Publish with capabilities={json.dumps(asset_caps)}.")
+    if e2e and e2e["uploads"]:
+        print("e2e-uploads=" + json.dumps(e2e["uploads"]))
 
     if args.markdown_out:
         md_path = Path(args.markdown_out)
         md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_content = build_markdown_summary(manifest, validated_plan, github_cfg)
+        md_content = build_markdown_summary(manifest, validated_plan, github_cfg, e2e)
         md_path.write_text(md_content, encoding="utf-8")
         print(f"✓ Companion Markdown summary written to: {md_path}")
 

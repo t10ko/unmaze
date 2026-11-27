@@ -18,6 +18,7 @@ GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at
 - **Smart Screenshot Grouping** (3+ screenshots in one block become a gallery—one large image plus a captioned thumbnail strip; a before/after pair sits side by side; screenshots never grow taller than ~70% of the window),
 - **GitHub Review Status On the Board** (the top bar shows the PR's approval state, its checks and its open comment threads; comment threads sit right on the lines they're about; any line gets a comment box. Viewers with a claude.ai connector named "GitHub" see live data and post as themselves; everyone else sees a dated snapshot and a "Not connected to GitHub" note, and the comment box copies their text and opens that exact line on GitHub),
 - **Boards That Stay Fresh** (a published board is remembered per branch, and after every later `git push` Claude refreshes it at the same URL without anyone asking for `/unmaze` again),
+- **Tested End to End** (when someone ran end-to-end checks on the PR and saved a results file, a "Tested end to end" section shows every check in plain words, failures first, with a GIF of each browser step and the request/response of each API or background-job step, plus a warning when the checks ran on an older commit),
 - **Super Casual Teammate Voice Everywhere** (written like a teammate walking you through the PR over Slack—contractions, `we`/`you`, zero stiff docs or AI jargon),
 - **Arc-style Chapters** (splitting large PRs into ordered chapters—`Chapter 1`, `Chapter 2`—in a clean sidebar),
 - **Top-Bar Role & Area Tree Filter** (2-level `Role Surface -> App Area` filter that dims unrelated chapters and steps so FE, BE, or domain engineers can review just their slice),
@@ -190,13 +191,23 @@ python3 "<SKILL_DIR>/scripts/build_artifact.py" \
 
 For a GitHub PR, `parse_diff.py` also saves `pr-activity.json` (reviews, approvals, checks and comment threads, via `gh`) next to the manifest, and `build_artifact.py` picks it up on its own; pass `--no-github-activity` to `parse_diff.py` to skip it. When the build prints a `capabilities=` line, keep it for publishing.
 
-If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, too many steps for the step budget, missing ship facts, a missing diagram decision or an ungrounded/unneeded diagram, missing red-marked screenshots, skipped Sweep 1/Sweep 2, or schema error), fix the reported issue and re-run until `✓ Verified 100% diff coverage` succeeds.
+**End-to-end results (optional):** when someone ran end-to-end checks on this PR and saved a results file (format: `<SKILL_DIR>/references/e2e-results.md`), add `--e2e-results <path/to/results.json> --asset-urls "$WORK_DIR/asset-urls.json"` to the command. The board gets a "Tested end to end" section, a pill in the Overview and a sidebar entry. Step GIFs are never embedded: a GIF with no URL in `asset-urls.json` yet (a missing file means none) shows a placeholder, and the build prints an `e2e-uploads=` line listing the files to upload in Step 7.
+
+If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, too many steps for the step budget, missing ship facts, a missing diagram decision or an ungrounded/unneeded diagram, missing red-marked screenshots, skipped Sweep 1/Sweep 2, a broken end-to-end results file, or schema error), fix the reported issue and re-run until `✓ Verified 100% diff coverage` succeeds.
 
 ---
 
 ### Step 7: Publish Artifact & Present Concise Summary
 
-1. **Publish via Claude Code `Artifact` tool (Primary):** Read `$WORK_DIR/unmaze-review.html` and invoke the `Artifact` tool so the user receives a live shareable `claude.ai/code/artifact/...` URL. When the build printed a `capabilities=` line (the board is about a GitHub PR), pass that object as the publish's `capabilities` on the **first** publish, so viewers who have a claude.ai connector named "GitHub" get live reviews, checks and comments and can comment from the board. If the publish is refused because of that capability, publish again without `capabilities`: the board still shows the saved snapshot and says it isn't connected. Tell the user in one line that live GitHub data needs each viewer to add GitHub's MCP server (`https://api.githubcopilot.com/mcp/`) as a claude.ai connector named "GitHub", and that this setup isn't verified yet.
+1. **Publish via Claude Code `Artifact` tool (Primary):** Read `$WORK_DIR/unmaze-review.html` and invoke the `Artifact` tool so the user receives a live shareable `claude.ai/code/artifact/...` URL. When the build printed a `capabilities=` line (the board is about a GitHub PR, has step GIFs, or both), pass that object as the publish's `capabilities` on the **first** publish: its `mcp` part lets viewers who have a claude.ai connector named "GitHub" get live reviews, checks and comments and comment from the board, and its `assets` part lets the board show uploaded GIFs. If the publish is refused because of the `mcp` part, publish again without it (keep `assets` when it's there): the board still shows the saved snapshot and says it isn't connected. Tell the user in one line that live GitHub data needs each viewer to add GitHub's MCP server (`https://api.githubcopilot.com/mcp/`) as a claude.ai connector named "GitHub", and that this setup isn't verified yet.
+   - **When the build printed an `e2e-uploads=` line** (step GIFs not uploaded yet), right after that first publish:
+     1. Upload the listed files to the board with the `Artifact` tool (`action: "publish"`, `url`: the board, `asset: true`, `file_paths`: up to 25 files per call).
+     2. Save each file's URL from the result, keyed by the file's sha256, merging with what's already saved:
+        ```bash
+        python3 "<SKILL_DIR>/scripts/e2e_results.py" record-urls --asset-urls "$WORK_DIR/asset-urls.json" \
+          "<file-1>=<url-1>" "<file-2>=<url-2>"
+        ```
+     3. Rebuild exactly as in Step 6 (with `--asset-urls "$WORK_DIR/asset-urls.json"`) until no `e2e-uploads=` line is printed, then republish to the same `url` without `capabilities`.
 2. **Remember the board for automatic refreshes:** right after publishing, record it so later pushes keep it fresh at the same URL:
    ```bash
    python3 "<SKILL_DIR>/scripts/board_registry.py" record --work-dir "$WORK_DIR" --url "<artifact-url>"
@@ -224,7 +235,7 @@ The plugin's hook watches `git push` (and session start). When the branch moved 
      --plan "$WORK_DIR/plan.json" --out "$WORK_DIR/plan.json"
    ```
    Its report lists what you still own: **unclaimed new hunks** (place each in the right step, a new step, or `mechanical`), **steps to re-read** (update their sentence, points, tables, highlights and screenshots to match the new code), **empty steps** (delete them or give them lines) and dropped highlights. Also re-check `overview.footprint`, `overview.ship_facts` and `this_pr_part`. Link any new prose to existing concepts with `[[concept-id|phrase]]`; write a new concept only for a genuinely new term.
-4. **Build** exactly as in Step 6 until `✓ Verified 100% diff coverage`.
-5. **Republish to the same URL:** read the board with the `Artifact` tool (`action: "read"`, `url`), then publish the new HTML with that `url` so every link to it (PR description, Slack) keeps working. Leave `capabilities` out on a republish: the board keeps the GitHub access it was published with. Re-parsing in step 2 also refreshed the review, checks and comments snapshot.
+4. **Build** exactly as in Step 6 until `✓ Verified 100% diff coverage`. If the board shows end-to-end results, pass the same `--e2e-results` (the latest results file) and `--asset-urls "$WORK_DIR/asset-urls.json"` again; already-uploaded GIFs keep their URLs because they're keyed by content.
+5. **Republish to the same URL:** read the board with the `Artifact` tool (`action: "read"`, `url`), then publish the new HTML with that `url` so every link to it (PR description, Slack) keeps working. Leave `capabilities` out on a republish: the board keeps the access it was published with. The one exception: when this refresh is the first time the board has step GIFs (it was published without `assets`), pass the build's **full** `capabilities=` object on this republish, since a non-empty declaration replaces the stored one and must still include what was there before. If the build printed `e2e-uploads=`, upload and rebuild as in Step 7 before the final republish. Re-parsing in step 2 also refreshed the review, checks and comments snapshot.
 6. **Record the new commit:** `python3 "<SKILL_DIR>/scripts/board_registry.py" record --work-dir "$WORK_DIR" --url "<same-url>"`.
 7. Tell the user in one line that the board was refreshed, what changed in it, and its link.
