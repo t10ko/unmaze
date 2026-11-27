@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "unmaze",
-      "version": "0.13.0",
+      "version": "0.13.1",
       "description": "AI code review guides for big pull requests: turn any GitHub PR into a step-by-step review guide with notes on tricky code, approvals, checks and comments.",
       "source": "./"
     }

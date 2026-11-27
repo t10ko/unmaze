@@ -5742,7 +5742,14 @@ def build_html_artifact(
     .hl-chev {{ color: var(--muted); font-size: 0.72rem; transition: transform 0.15s ease; }}
     .hl-note-head:hover .hl-chev {{ color: var(--accent); }}
     .hl-note.is-open .hl-chev {{ transform: rotate(90deg); }}
-    .hl-note-text {{ display: none; flex-basis: 100%; min-width: 0; max-width: 92ch; padding: 0 0 0.25rem 1.9rem; }}
+    /* Full row width so the explanation always drops below its title; the end padding keeps lines near 92ch. */
+    .hl-note-text {{
+      display: none;
+      flex: 0 0 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      padding: 0 max(0px, calc(100% - 92ch - 1.9rem)) 0.25rem 1.9rem;
+    }}
     .hl-note.is-open .hl-note-text {{ display: block; }}
 
     .hl-note-lines {{
