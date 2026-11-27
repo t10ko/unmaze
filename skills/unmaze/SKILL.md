@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.14.0"
+  version: "0.15.0"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
@@ -18,7 +18,7 @@ GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at
 - **Smart Screenshot Grouping** (3+ screenshots in one block become a gallery—one large image plus a captioned thumbnail strip; a before/after pair sits side by side; screenshots never grow taller than ~70% of the window),
 - **GitHub Review Status On the Board** (the top bar shows the PR's approval state, its checks and its open comment threads; comment threads sit right on the lines they're about; any line gets a comment box. Viewers with a claude.ai connector named "GitHub" see live data and post as themselves; everyone else sees a dated snapshot and a "Not connected to GitHub" note, and the comment box copies their text and opens that exact line on GitHub),
 - **Boards That Stay Fresh** (a published board is remembered per branch, and after every later `git push` Claude refreshes it at the same URL without anyone asking for `/unmaze` again),
-- **Tested End to End** (when someone ran end-to-end checks on the PR and saved a results file, a "Tested end to end" section shows every check in plain words, failures first, with a GIF of each browser step and the request/response of each API or background-job step, plus a warning when the checks ran on an older commit),
+- **Tested End to End** (the plugin's `unmaze:e2e` skill tests the PR like a senior QA, in your Chrome, and when it or anyone else saved a results file, a "Tested end to end" section shows every check in plain words, failures first, with a GIF of each browser step and the request/response of each API or background-job step, plus a warning when the checks ran on an older commit),
 - **Super Casual Teammate Voice Everywhere** (written like a teammate walking you through the PR over Slack—contractions, `we`/`you`, zero stiff docs or AI jargon),
 - **Arc-style Chapters** (splitting large PRs into ordered chapters—`Chapter 1`, `Chapter 2`—in a clean sidebar),
 - **Top-Bar Role & Area Tree Filter** (2-level `Role Surface -> App Area` filter that dims unrelated chapters and steps so FE, BE, or domain engineers can review just their slice),
@@ -191,7 +191,11 @@ python3 "<SKILL_DIR>/scripts/build_artifact.py" \
 
 For a GitHub PR, `parse_diff.py` also saves `pr-activity.json` (reviews, approvals, checks and comment threads, via `gh`) next to the manifest, and `build_artifact.py` picks it up on its own; pass `--no-github-activity` to `parse_diff.py` to skip it. When the build prints a `capabilities=` line, keep it for publishing.
 
-**End-to-end results (optional):** when someone ran end-to-end checks on this PR and saved a results file (format: `<SKILL_DIR>/references/e2e-results.md`), add `--e2e-results <path/to/results.json> --asset-urls "$WORK_DIR/asset-urls.json"` to the command. The board gets a "Tested end to end" section, a pill in the Overview and a sidebar entry. Step GIFs are never embedded: a GIF with no URL in `asset-urls.json` yet (a missing file means none) shows a placeholder, and the build prints an `e2e-uploads=` line listing the files to upload in Step 7. To look at a board from disk before publishing, `--inline-gifs` embeds the GIFs instead; never publish a board built that way.
+**End-to-end results (optional):** first see whether the `unmaze:e2e` skill saved checks for this branch:
+```bash
+python3 "<SKILL_DIR>/../e2e/scripts/e2e_runs.py" status --sha <the commit the board is built from>
+```
+For a PR that isn't checked out here, add `--branch <its head branch>`. If the command fails (not a git repo, a detached HEAD, or no e2e skill installed), skip it. When its `results` isn't `null`, use that file. When `stale` is `true`, the checks ran on an older commit: run `unmaze:e2e --rerun` first, so the guide shows results for the latest commit. Don't rerun when `unmaze:e2e` itself sent you here, or when the PR isn't checked out here: use the file as it is (the board warns that the checks are older) and tell the user that `/unmaze:e2e` from a checkout of that branch refreshes them. Uncommitted changes alone never call for a rerun; the section already says "plus uncommitted changes". For a results file from anywhere else (format: `<SKILL_DIR>/references/e2e-results.md`), use its path. Then add `--e2e-results <path/to/results.json> --asset-urls "$WORK_DIR/asset-urls.json"` to the command. The board gets a "Tested end to end" section, a pill in the Overview and a sidebar entry. Step GIFs are never embedded: a GIF with no URL in `asset-urls.json` yet (a missing file means none) shows a placeholder, and the build prints an `e2e-uploads=` line listing the files to upload in Step 7. To look at a board from disk before publishing, `--inline-gifs` embeds the GIFs instead; never publish a board built that way.
 
 If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, too many steps for the step budget, missing ship facts, a missing diagram decision or an ungrounded/unneeded diagram, missing red-marked screenshots, skipped Sweep 1/Sweep 2, a broken end-to-end results file, or schema error), fix the reported issue and re-run until `✓ Verified 100% diff coverage` succeeds.
 

@@ -99,8 +99,13 @@ def _validate(raw: Any, base_dir: Path, errors: list[str]) -> dict[str, Any]:
     tested_sha = _req_str(raw, "tested_sha", where, errors)
     if tested_sha and not _SHA_RE.match(tested_sha):
         errors.append(f"{where}: `tested_sha` {json.dumps(tested_sha)} doesn't look like a commit sha (7-64 hex characters).")
+    uncommitted = raw.get("uncommitted_changes", False)
+    if not isinstance(uncommitted, bool):
+        errors.append(f"{where}: `uncommitted_changes` must be true or false.")
+        uncommitted = False
     results: dict[str, Any] = {
         "tested_sha": tested_sha.lower(),
+        "uncommitted_changes": uncommitted,
         "tested_at": _opt_str(raw, "tested_at", where, errors),
         "environment": _opt_str(raw, "environment", where, errors),
         "summary": _req_str(raw, "summary", where, errors),
@@ -442,6 +447,7 @@ def render_section_body_html(model: dict[str, Any], step_files: list[tuple[str, 
         meta.append(f'<span><span class="e2e-k">Where</span>{_prose(model["environment"])}</span>')
     meta.append(
         f'<span>Tested on commit <code>{_esc(model["tested_sha"][:7])}</code>'
+        f'{" plus uncommitted changes" if model.get("uncommitted_changes") else ""}'
         f'{" · " + _esc(when) if when else ""}</span>'
     )
     stale_html = (
@@ -495,7 +501,10 @@ def _md(value: Any) -> str:
 
 def render_markdown(model: dict[str, Any]) -> list[str]:
     when = format_tested_at(model["tested_at"])
-    commit = f"Tested on commit `{model['tested_sha'][:7]}`" + (f" · {_md(when)}" if when else "")
+    commit = f"Tested on commit `{model['tested_sha'][:7]}`"
+    if model.get("uncommitted_changes"):
+        commit += " plus uncommitted changes"
+    commit += f" · {_md(when)}" if when else ""
     if model["environment"]:
         commit += f" · {_md(model['environment'])}"
     counts = model["counts"]

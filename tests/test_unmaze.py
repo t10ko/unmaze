@@ -1801,6 +1801,140 @@ class UnmazeTestSuite(unittest.TestCase):
         self.assertIn("T &lt;script&gt;e2e()&lt;/script&gt;", html_out)
         self.assertIn("P &lt;script&gt;e2e()&lt;/script&gt;", html_out)
 
+    def test_e2e_uncommitted_changes_are_shown_and_validated(self) -> None:
+        results = self._e2e_results()
+        results["uncommitted_changes"] = True
+        with tempfile.TemporaryDirectory() as tmp:
+            res, work = self._e2e_build(Path(tmp), results, with_pr=False, inline_gifs=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("Tested on commit <code>0123456</code> plus uncommitted changes", (work / "review.html").read_text(encoding="utf-8"))
+        results["uncommitted_changes"] = "yes"
+        with tempfile.TemporaryDirectory() as tmp:
+            res, _ = self._e2e_build(Path(tmp), results, with_pr=False)
+            self.assertEqual(res.returncode, 2)
+            self.assertIn("`uncommitted_changes` must be true or false", res.stderr)
+
+    def test_e2e_skill_keeps_checks_per_branch_and_moves_gifs(self) -> None:
+        script = REPO_ROOT / "skills" / "e2e" / "scripts" / "e2e_runs.py"
+
+        def runs(repo: Path, *args: str) -> subprocess.CompletedProcess:
+            return subprocess.run([sys.executable, str(script), *args, "--repo", str(repo)],
+                                  capture_output=True, text=True, check=False)
+
+        def git(repo: Path, *args: str) -> str:
+            return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=repo,
+                                  capture_output=True, text=True, check=True).stdout.strip()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "shop"
+            repo.mkdir()
+            git(repo, "init", "-q", "-b", "main")
+            (repo / "cart.ts").write_text("export const MIN = 5000;\n")
+            git(repo, "add", ".")
+            git(repo, "commit", "-q", "-m", "cart")
+            git(repo, "checkout", "-q", "-b", "feat/cart-banner")
+            head = git(repo, "rev-parse", "HEAD")
+
+            # The folder sits in the git directory, keyed by branch.
+            res = runs(repo, "dir")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            folder = Path(res.stdout.strip())
+            self.assertEqual(folder, (repo / ".git" / "unmaze" / "e2e" / "feat-cart-banner").resolve())
+            self.assertTrue((folder / "media").is_dir())
+            status = json.loads(runs(repo, "status").stdout)
+            self.assertIsNone(status["results"])
+            self.assertFalse(status["stale"])
+
+            # A valid run on HEAD is current; its passing browser step has its GIF.
+            (folder / "media" / "S1-step1.gif").write_bytes(self.TINY_GIF)
+            results = {
+                "tested_sha": head, "summary": "Clicked through the cart.",
+                "scenarios": [{"id": "S1", "title": "Banner", "why": "Shoppers see the goal.", "kind": "browser",
+                               "status": "pass", "steps": [{"action": "Open the cart", "expected": "Banner",
+                                                            "status": "pass", "gif": "media/S1-step1.gif"}]}],
+            }
+            (folder / "results.json").write_text(json.dumps(results))
+            res = runs(repo, "check")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("1 passed, 0 failed, 0 skipped", res.stdout)
+            status = json.loads(runs(repo, "status").stdout)
+            self.assertEqual(status["results"], str(folder / "results.json"))
+            self.assertEqual(status["tested_sha"], head)
+            self.assertFalse(status["stale"])
+            self.assertEqual(status["counts"], {"pass": 1, "fail": 0, "skipped": 0})
+
+            # check holds the run to the plan and to its own claims.
+            (folder / "scenarios.md").write_text(
+                "## Scenarios\n### S1 — Banner\n- Kind: browser\n- Steps:\n  1. Open → Expected: banner\n"
+                "### S2 — Quote API\n- Kind: api\n\n## Variants the code branches on\n- none\n")
+            res = runs(repo, "check")
+            self.assertEqual(res.returncode, 2)
+            self.assertIn("S2 is in scenarios.md but not in results.json", res.stderr)
+            api = {"id": "S2", "title": "Quote", "why": "Checkout uses it.", "kind": "browser", "status": "pass",
+                   "steps": [{"action": "Call the quote API", "expected": "200", "status": "pass"}]}
+            results["scenarios"].append(api)
+            (folder / "results.json").write_text(json.dumps(results))
+            self.assertIn("S2 is a api scenario in scenarios.md but `browser` in results.json", runs(repo, "check").stderr)
+            api["kind"] = "api"
+            (folder / "results.json").write_text(json.dumps(results))
+            self.assertIn("S2 step 1: a passing api step needs the `response` it got", runs(repo, "check").stderr)
+            api["steps"][0]["response"] = "HTTP 200"
+            results["scenarios"][0]["steps"].append({"action": "Reload", "expected": "Same banner", "status": "skipped"})
+            (folder / "results.json").write_text(json.dumps(results))
+            self.assertIn("S1 is marked pass, but not every step passed", runs(repo, "check").stderr)
+            results["scenarios"][0]["steps"].pop()
+            del results["scenarios"][0]["steps"][0]["gif"]
+            (folder / "results.json").write_text(json.dumps(results))
+            res = runs(repo, "check")
+            self.assertEqual(res.returncode, 2)
+            self.assertIn("S1 step 1: a passing browser step needs its GIF", res.stderr)
+            results["scenarios"][0]["steps"][0]["gif"] = "media/S1-step1.gif"
+
+            # Uncommitted changes are reported but never make a run stale (a rerun on a dirty
+            # tree would only be dirty again); a newer commit does.
+            results["uncommitted_changes"] = True
+            (folder / "results.json").write_text(json.dumps(results))
+            self.assertEqual(runs(repo, "check").returncode, 0)
+            status = json.loads(runs(repo, "status").stdout)
+            self.assertFalse(status["stale"])
+            self.assertTrue(status["uncommitted_changes"])
+            results["uncommitted_changes"] = False
+            (folder / "results.json").write_text(json.dumps(results))
+            (repo / "cart.ts").write_text("export const MIN = 4000;\n")
+            git(repo, "commit", "-q", "-am", "lower the bar")
+            status = json.loads(runs(repo, "status").stdout)
+            self.assertTrue(status["stale"])
+            self.assertEqual(status["stale_reason"], "older_commit")
+            self.assertFalse(json.loads(runs(repo, "status", "--sha", head).stdout)["stale"], "--sha picks the commit to compare with")
+            self.assertIn("record the commit you tested", runs(repo, "check").stderr)
+
+            # take-gif moves the newest export (browsers rename repeats to "name (1).gif").
+            downloads = Path(tmp) / "Downloads"
+            downloads.mkdir()
+            old = downloads / "S1-step2.gif"
+            old.write_bytes(b"old")
+            stale_time = old.stat().st_mtime - 3600
+            import os
+            os.utime(old, (stale_time, stale_time))
+            (downloads / "S1-step2 (1).gif").write_bytes(self.TINY_GIF)
+            (downloads / "S1-step20.gif").write_bytes(b"other step")
+            res = runs(repo, "take-gif", "S1-step2.gif", "--downloads", str(downloads))
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual((folder / "media" / "S1-step2.gif").read_bytes(), self.TINY_GIF)
+            self.assertTrue(old.exists(), "an export older than --max-age is left alone")
+            self.assertTrue((downloads / "S1-step20.gif").exists(), "a different step's file is never taken")
+            res = runs(repo, "take-gif", "S1-step3.gif", "--downloads", str(downloads))
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("export the GIF again", res.stderr)
+
+            # A detached HEAD needs the branch named.
+            git(repo, "checkout", "-q", "--detach")
+            res = runs(repo, "dir")
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("--branch", res.stderr)
+            res = runs(repo, "dir", "--branch", "feat/cart-banner")
+            self.assertEqual(Path(res.stdout.strip()), folder)
+
     def test_board_without_e2e_results_is_unchanged(self) -> None:
         # The sample snapshot has a check named "e2e-webhooks", so match the section's own markup.
         markers = ("Tested end to end", ".e2e-", 'class="e2e', "arc-tab-e2e", "step-e2e")

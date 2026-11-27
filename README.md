@@ -18,7 +18,7 @@ AI agents now write a 1,500-line pull request across 25 files in two minutes. No
 - **The story first:** what the whole task is, what *this* PR does, which services it touches and what has to happen at deploy time.
 - **Then the code, in the order it makes sense:** data shapes before logic, logic before wiring, tests next to the code they prove.
 - **Plain notes on the hard parts**, the PR's approvals, checks and comments right on the page, and a check that **every changed line** made it into the guide.
-- **Proof it works:** when someone ran end-to-end checks on the PR, a "Tested end to end" section shows each one in plain words, with a GIF of every browser step.
+- **Proof it works:** `/unmaze:e2e` tests the PR like a senior QA would, clicking through your local app in your Chrome, and the guide's "Tested end to end" section shows each check in plain words, with a GIF of every browser step.
 
 It does not replace your reviewers or leave bot comments on your PR. It helps a human understand the change fast enough to review it properly.
 
@@ -69,7 +69,10 @@ Then, inside any repository in Claude Code:
 /unmaze <github-pr-url>     # any PR by URL
 /unmaze main...HEAD         # any git range
 /unmaze --staged            # your staged changes, before you even commit
+/unmaze:e2e                 # test the current branch end to end first; /unmaze then shows the results
 ```
+
+`/unmaze:e2e` reads how to start your app from your README and `AGENTS.md`/`CLAUDE.md`; an `unmaze-e2e.md` at the repo root (or in `.claude/`) can add test accounts and which data is safe to record.
 
 You get a link to a shareable board on claude.ai, plus local `.html` and `.md` copies.
 

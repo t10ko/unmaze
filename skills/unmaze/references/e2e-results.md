@@ -1,25 +1,26 @@
 # End-to-end results file (`--e2e-results`)
 
-Any tool (or person) that ran end-to-end checks on a PR can write this file. `build_artifact.py --e2e-results <file>` turns it into the board's **"Tested end to end"** section: a sidebar entry with a pass count, a one-line pill in the Overview, and one card per scenario (failures first, then skipped, then passed) with numbered steps, a GIF for each browser step and the request/response of each API or background-job step. The Markdown copy gets a short summary and a `Scenario | How | Result` table.
+The `unmaze:e2e` skill writes this file, and any other tool (or person) that ran end-to-end checks on a PR can write it too. `build_artifact.py --e2e-results <file>` turns it into the board's **"Tested end to end"** section: a sidebar entry with a pass count, a one-line pill in the Overview, and one card per scenario (failures first, then skipped, then passed) with numbered steps, a GIF for each browser step and the request/response of each API or background-job step. The Markdown copy gets a short summary and a `Scenario | How | Result` table.
 
 ```json
 {
   "tested_sha": "full commit sha the checks ran on",
+  "uncommitted_changes": false,
   "tested_at": "2026-11-27T12:00:00Z",
-  "environment": "Local app, tenant 1100, Chrome",
+  "environment": "Local app at http://localhost:3000, test shopper account, Chrome",
   "summary": "One plain sentence on what was tested and how it went.",
   "scenarios": [
     {
       "id": "S1",
-      "title": "Filtering issues by SIEM shows only that SIEM",
+      "title": "Under $50, the banner says how much is left",
       "why": "Plain words: what a user would hit if this broke.",
       "kind": "browser",
       "status": "pass",
       "note": "",
-      "files": ["frontend/src/pages/issues/Filters.tsx"],
+      "files": ["src/cart/shipping.ts", "src/components/FreeShippingBanner.tsx"],
       "steps": [
-        {"action": "Open Issues and pick Splunk in the SIEM filter", "expected": "Only Splunk issues are listed", "status": "pass", "gif": "media/S1-step1.gif"},
-        {"action": "Call GET /api/v1/tenants/1100/issues?siem=splunk", "expected": "HTTP 200 with only Splunk issues", "status": "pass", "request": "GET /api/v1/...", "response": "HTTP 200\n{...}"}
+        {"action": "Open a cart with a $22.50 tote and a $15.00 mug", "expected": "\"Add $12.50 more to get free shipping.\" and $5.99 shipping", "status": "pass", "gif": "media/S1-step1.gif"},
+        {"action": "Call GET /api/cart/quote for that cart", "expected": "HTTP 200 with leftForFreeCents 1250", "status": "pass", "request": "GET /api/cart/quote", "response": "HTTP 200\n{...}"}
       ]
     }
   ]
@@ -30,6 +31,7 @@ Any tool (or person) that ran end-to-end checks on a PR can write this file. `bu
 
 - **Required:** `tested_sha` (7–64 hex characters), `summary`, and a non-empty `scenarios` list. Per scenario: `id` (unique), `title`, `why`, `kind`, `status` and at least one step. Per step: `action`, `expected`, `status`.
 - **Optional:** `tested_at` (ISO 8601; shown as a date and UTC time), `environment`, scenario `files`, step `gif`, `request` and `response`.
+- `uncommitted_changes`: `true` when the run tested the working tree with changes that weren't committed yet; the section then says "plus uncommitted changes" next to the commit.
 - `kind`: `browser` ("In the browser"), `api` ("Through the API") or `job` ("Background job").
 - `status` (scenario and step): `pass`, `fail` or `skipped`. A `fail` or `skipped` scenario needs a `note` saying why; leave it empty for `pass`.
 - `gif` is a path relative to the results file's folder and must exist. A step may have a `gif`, a `request`/`response`, both, or neither.
