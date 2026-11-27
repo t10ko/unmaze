@@ -26,6 +26,7 @@ It does not replace your reviewers or leave bot comments on your PR. It helps a 
 ## Contents
 
 - [Install in 30 seconds](#install-in-30-seconds)
+- [Set it up for your whole team](#set-it-up-for-your-whole-team)
 - [Why reviewing AI-generated pull requests is hard](#why-reviewing-ai-generated-pull-requests-is-hard)
 - [Everything unmaze does, one feature at a time](#everything-unmaze-does-one-feature-at-a-time)
 - [How it works](#how-it-works)
@@ -70,6 +71,34 @@ Then, inside any repository in Claude Code:
 ```
 
 You get a link to a shareable board on claude.ai, plus local `.html` and `.md` copies.
+
+---
+
+## Set it up for your whole team
+
+**For one repository:** commit this to the repository's `.claude/settings.json` (if the file already exists, add these two keys to it):
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "unmaze-marketplace": {
+      "source": { "source": "github", "repo": "t10ko/unmaze" },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "unmaze@unmaze-marketplace": true
+  }
+}
+```
+
+When a teammate opens the repository in Claude Code and trusts the folder, Claude Code adds the unmaze marketplace for them. Each teammate then installs unmaze once in their copy of the repository:
+
+```bash
+claude plugin install unmaze@unmaze-marketplace --scope project
+```
+
+**For the whole company:** an Owner of a Claude for Teams or Enterprise organization can paste the same JSON into **Organization settings → Claude Code → Managed settings** on claude.ai, or ship it through MDM or a `managed-settings.json` file. Claude Code then installs unmaze for everyone at the start of their next session, with no step for each person. See [Manage Claude Code plugins for your organization](https://code.claude.com/docs/en/plugins/org) for the details.
 
 ---
 

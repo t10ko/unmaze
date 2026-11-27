@@ -1424,6 +1424,31 @@ class UnmazeTestSuite(unittest.TestCase):
         self.assertIsNone(bare["snapshot"])
         self.assertIn("No GitHub snapshot was saved", "\n".join(github_panel.render_github_markdown(bare)))
 
+    def test_board_and_summary_link_back_to_unmaze(self) -> None:
+        manifest = self._build_sample_manifest()
+        validated = build_artifact.validate_and_normalize_plan(
+            manifest, copy.deepcopy(self.sample_plan), search_dirs=[REPO_ROOT / "examples"]
+        )
+        home = "https://github.com/t10ko/unmaze"
+        html_out = build_artifact.build_html_artifact(manifest, validated)
+        self.assertIn(
+            f'<a class="arc-brand" href="{home}" target="_blank" rel="noopener noreferrer"', html_out,
+            "the top-bar name opens the project",
+        )
+        self.assertRegex(
+            html_out,
+            r'(?s)<footer class="foot-hint">.*<p class="foot-credit">Made with <a href="'
+            + re.escape(home) + r'" target="_blank" rel="noopener noreferrer">unmaze</a>, .*</p>\s*</footer>',
+        )
+
+        activity = json.loads((REPO_ROOT / "examples" / "sample-activity.json").read_text(encoding="utf-8"))
+        cfg = github_panel.build_github_config(manifest["meta"], activity)
+        for md in (build_artifact.build_markdown_summary(manifest, validated),
+                   build_artifact.build_markdown_summary(manifest, validated, cfg)):
+            tail = md.rstrip("\n").split("\n")[-4:]
+            self.assertEqual(tail[:3], ["", "---", ""], "a blank line keeps the divider from turning text into a heading")
+            self.assertTrue(tail[3].startswith(f"<sub>Made with [unmaze]({home}), "), tail[3])
+
 
 if __name__ == "__main__":
     unittest.main()

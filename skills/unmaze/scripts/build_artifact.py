@@ -32,6 +32,8 @@ import github_panel  # noqa: E402
 
 
 EXPAND_CHUNK = 15
+UNMAZE_HOMEPAGE = "https://github.com/t10ko/unmaze"
+UNMAZE_PITCH = "a free Claude Code plugin that turns big pull requests into step-by-step review guides like this one"
 
 VALID_LAYERS = {
     "contracts": {"order": 1, "label": "Contracts & Shapes", "short": "Contracts"},
@@ -4210,7 +4212,9 @@ def build_html_artifact(
       letter-spacing: 0.02em;
       color: var(--text);
       padding: 0 0.2rem;
+      text-decoration: none;
     }}
+    a.arc-brand:hover {{ text-decoration: underline; text-underline-offset: 3px; }}
 
     .icon-btn {{
       appearance: none;
@@ -5978,6 +5982,8 @@ def build_html_artifact(
       font-size: 0.75rem;
       color: var(--muted);
     }}
+    .foot-credit {{ margin: 0.45rem 0 0; }}
+    .foot-credit a {{ color: inherit; font-weight: 650; text-underline-offset: 2px; }}
 {github_panel.GH_CSS if github_cfg else ""}
   </style>
 </head>
@@ -5985,7 +5991,7 @@ def build_html_artifact(
   <header class="app-topbar">
     <div class="topbar-left">
       <button type="button" id="rail-toggle" class="icon-btn" aria-expanded="true" aria-label="Toggle chapter sidebar">◧ Sidebar</button>
-      <span class="arc-brand">unmaze</span>
+      <a class="arc-brand" href="{UNMAZE_HOMEPAGE}" target="_blank" rel="noopener noreferrer" title="Made with unmaze. Open the project on GitHub">unmaze</a>
       <div class="scope-filter-group">
         <button type="button" id="scope-filter-btn" class="scope-trigger-btn" popovertarget="scope-filter-popover" aria-controls="scope-filter-popover" aria-expanded="false">
           <svg class="scope-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="1.5 2.5 14.5 2.5 9.5 8.2 9.5 13 6.5 14.2 6.5 8.2 1.5 2.5"/></svg>
@@ -6027,6 +6033,7 @@ def build_html_artifact(
 
       <footer class="foot-hint">
         Shortcuts: <code>[</code> / <code>]</code> prev/next enabled step · Filter by area in the top bar · Click any <code>concept ?</code> for a repo primer
+        <p class="foot-credit">Made with <a href="{UNMAZE_HOMEPAGE}" target="_blank" rel="noopener noreferrer">unmaze</a>, {UNMAZE_PITCH}.</p>
       </footer>
     </div>
   </div>
@@ -6901,6 +6908,8 @@ def build_markdown_summary(
         lines.append("")
 
     lines.extend(github_panel.render_github_markdown(github_cfg))
+
+    lines.extend(["", "---", "", f"<sub>Made with [unmaze]({UNMAZE_HOMEPAGE}), {UNMAZE_PITCH}.</sub>"])
 
     return "\n".join(strip_concept_markup(line) for line in lines) + "\n"
 

@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.12.0"
+  version: "0.12.1"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
