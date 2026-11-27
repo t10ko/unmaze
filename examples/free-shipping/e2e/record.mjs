@@ -212,9 +212,9 @@ const SCENARIOS = [
     steps: [
       { action: "Open a $55.00 cart", expected: "\"You've got free shipping!\"",
         run: async () => {}, check: (s) => s.banner === "You've got free shipping!" && s.shipping === "$0.00" },
-      { action: "Apply the $10 coupon SAVE10", expected: "\"Add $5.00 more to get free shipping.\", $5.99 shipping, $50.99 total",
+      { action: "Apply the 10%-off coupon SAVE10", expected: "\"Add $0.50 more to get free shipping.\", $5.99 shipping, $55.49 total",
         run: async (b) => { await b.type("#coupon", "SAVE10"); await b.click("#apply"); },
-        check: (s) => s.banner === "Add $5.00 more to get free shipping." && s.shipping === "$5.99" && s.total === "$50.99" },
+        check: (s) => s.banner === "Add $0.50 more to get free shipping." && s.shipping === "$5.99" && s.total === "$55.49" },
     ],
   },
   {

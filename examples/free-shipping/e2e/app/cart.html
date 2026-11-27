@@ -74,7 +74,7 @@
   const FREE_SHIPPING_MIN_CENTS = 5000;
   const STANDARD_SHIPPING_CENTS = 599;
   const INTERNATIONAL_SHIPPING_CENTS = 1999;
-  const COUPONS = { SAVE10: { amountOffCents: 1000 } };
+  const COUPONS = { SAVE10: { percentOff: 10 } };
 
   const PRODUCTS = {
     tote: { name: "Canvas tote bag", priceCents: 2250, color: "#dcc8a8" },
@@ -101,7 +101,8 @@
 
   const money = (cents) => "$" + (cents / 100).toFixed(2);
   const merchandise = (items) => items.reduce((sum, item) => sum + item.priceCents * item.quantity, 0);
-  const couponDiscount = (items, coupon) => (coupon ? Math.min(coupon.amountOffCents, merchandise(items)) : 0);
+  // Same rule as the example's couponDiscount(): percent off, rounded down to a whole cent.
+  const couponDiscount = (items, coupon) => (coupon ? Math.floor((merchandise(items) * coupon.percentOff) / 100) : 0);
 
   function eligibleSubtotalCents(items, coupon) {
     const physical = items.filter((item) => item.kind !== "gift_card");

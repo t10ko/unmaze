@@ -1,6 +1,6 @@
 {
   "tested_sha": "4f2c9a1d7e3b",
-  "tested_at": "2026-11-27T08:47:22Z",
+  "tested_at": "2026-11-27T09:19:24Z",
   "environment": "Stand-in cart page with the example's pricing, headless Chrome at 1200×720",
   "summary": "We clicked through the cart like a shopper would: 6 of 6 checks passed, and the checkout check was skipped because the demo has no backend.",
   "scenarios": [
@@ -72,8 +72,8 @@
           "gif": "media/S3-step1.gif"
         },
         {
-          "action": "Apply the $10 coupon SAVE10",
-          "expected": "\"Add $5.00 more to get free shipping.\", $5.99 shipping, $50.99 total",
+          "action": "Apply the 10%-off coupon SAVE10",
+          "expected": "\"Add $0.50 more to get free shipping.\", $5.99 shipping, $55.49 total",
           "status": "pass",
           "gif": "media/S3-step2.gif"
         }
