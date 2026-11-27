@@ -16,13 +16,44 @@
   ],
   "requested_reviewers": [],
   "checks": {
-    "summary": { "passed": 4, "failed": 0, "pending": 1, "skipped": 0, "total": 5 },
+    "summary": {
+      "passed": 4,
+      "failed": 0,
+      "pending": 1,
+      "skipped": 0,
+      "total": 5
+    },
     "items": [
-      { "name": "lint", "state": "passed", "url": "https://github.com/acme/shop/actions/runs/1", "group": "CI" },
-      { "name": "typecheck", "state": "passed", "url": "https://github.com/acme/shop/actions/runs/2", "group": "CI" },
-      { "name": "unit-tests", "state": "passed", "url": "https://github.com/acme/shop/actions/runs/3", "group": "CI" },
-      { "name": "build", "state": "passed", "url": "https://github.com/acme/shop/actions/runs/4", "group": "CI" },
-      { "name": "e2e-cart", "state": "pending", "url": "https://github.com/acme/shop/actions/runs/5", "group": "CI" }
+      {
+        "name": "lint",
+        "state": "passed",
+        "url": "https://github.com/acme/shop/actions/runs/1",
+        "group": "CI"
+      },
+      {
+        "name": "typecheck",
+        "state": "passed",
+        "url": "https://github.com/acme/shop/actions/runs/2",
+        "group": "CI"
+      },
+      {
+        "name": "unit-tests",
+        "state": "passed",
+        "url": "https://github.com/acme/shop/actions/runs/3",
+        "group": "CI"
+      },
+      {
+        "name": "build",
+        "state": "passed",
+        "url": "https://github.com/acme/shop/actions/runs/4",
+        "group": "CI"
+      },
+      {
+        "name": "e2e-cart",
+        "state": "pending",
+        "url": "https://github.com/acme/shop/actions/runs/5",
+        "group": "CI"
+      }
     ],
     "truncated": false
   },
@@ -30,9 +61,9 @@
     {
       "id": "PRRT_fs_1",
       "path": "src/cart/shipping.ts",
-      "line": 8,
+      "line": 18,
       "start_line": null,
-      "original_line": 8,
+      "original_line": 18,
       "side": "RIGHT",
       "is_resolved": true,
       "is_outdated": false,
@@ -40,13 +71,13 @@
       "comments": [
         {
           "author": "priya-frontend",
-          "body": "The ticket says \"over $50\". Is exactly $50.00 free too?",
+          "body": "Should the $50 count before or after the coupon? The brief just says \"orders over $50\".",
           "created_at": "2026-11-27T09:40:00Z",
           "url": "https://github.com/acme/shop/pull/27#discussion_r1"
         },
         {
           "author": "sam-dev",
-          "body": "Yes, marketing confirmed $50 and up. The \"is free at exactly $50\" test pins it.",
+          "body": "After. Marketing confirmed it, and the jacket test pins it ($55 with 10% off still pays shipping).",
           "created_at": "2026-11-27T09:52:00Z",
           "url": "https://github.com/acme/shop/pull/27#discussion_r2"
         }
@@ -55,9 +86,9 @@
     {
       "id": "PRRT_fs_2",
       "path": "src/cart/totals.ts",
-      "line": 10,
+      "line": 12,
       "start_line": null,
-      "original_line": 10,
+      "original_line": 12,
       "side": "RIGHT",
       "is_resolved": false,
       "is_outdated": false,

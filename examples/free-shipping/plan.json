@@ -8,15 +8,15 @@
         "url": "https://linear.app/acme/issue/SHOP-88"
       }
     ],
-    "whole_task": "We're giving [[free-shipping-rule|free shipping on orders of $50 or more]], and the cart now tells shoppers how much more they need to add to get it.",
+    "whole_task": "We're giving [[shipping-quote|free shipping on US orders of $50 or more]], and the cart now shows [[free-shipping-banner|a progress bar of how close you are]].",
     "footprint": [
       {
         "path": "src",
         "label": "Shop web app",
-        "change": "A new free-shipping rule that the cart total and a new banner on the cart page both use.",
+        "change": "A new shipping rule (gift cards, coupons, bulky items, orders abroad) that the cart total and a new progress banner both use.",
         "entry_points": [
-          "shippingCost()",
-          "amountLeftForFreeShipping()",
+          "shippingQuote()",
+          "eligibleSubtotalCents()",
           "<FreeShippingBanner />"
         ]
       }
@@ -31,12 +31,12 @@
       "deploy_order": "Just a normal web app deploy."
     },
     "before_state": "Every order paid a flat $5.99 for shipping, no matter how big it was.",
-    "after_state": "Orders of $50 or more ship free, and the cart shows how much more you need to add to get there.",
+    "after_state": "US orders of $50 or more ship free, and the cart shows a progress bar toward it.",
     "visuals": [
       {
         "src": "cart-free.png",
         "source_label": "Cart page (after this PR)",
-        "caption": "Here's the end result: a $62 cart gets [[free-shipping-banner|the green free-shipping banner]] and pays $0.00 for shipping.",
+        "caption": "Here's the end result: a $62 cart gets the green banner and pays $0.00 for shipping.",
         "annotations": [
           {
             "kind": "box",
@@ -62,39 +62,83 @@
   "concept_sweep_completed": true,
   "concepts": [
     {
-      "id": "free-shipping-rule",
-      "term": "Free-shipping rule",
+      "id": "shipping-quote",
+      "term": "Shipping quote",
       "origin": "introduced",
       "aliases": [
-        "shippingCost",
-        "amountLeftForFreeShipping"
+        "shippingQuote",
+        "ShippingQuote"
       ],
       "file": "src/cart/shipping.ts",
-      "what_it_is": "The one place that decides shipping: $50.00 or more ships free, anything less pays $5.99.",
+      "what_it_is": "The one answer the shop gives about shipping for a cart, in one of three shapes.",
       "how_it_works": [
-        "**`shippingCost()`:** returns 0 for an empty cart or a subtotal of 5000 cents or more, and 599 otherwise.",
-        "**`amountLeftForFreeShipping()`:** returns how many cents are left to reach 5000, and never goes below 0."
+        "**`nothing_to_ship`:** the cart is empty or only has gift cards.",
+        "**`international`:** the shopper is outside the US, so it's a flat $19.99 plus bulky fees.",
+        "**`domestic`:** a US price plus `leftForFreeCents`, how much more is needed for free shipping."
       ],
-      "pr_impact": "New in this PR. The cart total and the banner both call it, so they can't disagree.",
+      "pr_impact": "New in this PR. The cart total and the banner both read the same quote, so they can't disagree.",
       "related_steps": [
         "step-1",
         "step-2",
+        "step-3",
+        "step-4"
+      ]
+    },
+    {
+      "id": "eligible-subtotal",
+      "term": "What counts toward $50",
+      "origin": "introduced",
+      "aliases": [
+        "eligibleSubtotalCents"
+      ],
+      "file": "src/cart/shipping.ts",
+      "what_it_is": "The part of the cart that is compared with $50: physical items only, after the coupon.",
+      "how_it_works": [
+        "**Gift cards:** left out, because they're emailed and would let a $50 gift card unlock free shipping.",
+        "**Coupon:** taken off first, so $55 with 10% off ($49.50) doesn't qualify."
+      ],
+      "pr_impact": "New in this PR and used only by `shippingQuote()`.",
+      "related_steps": [
+        "step-1",
+        "step-2"
+      ]
+    },
+    {
+      "id": "coupon-discount",
+      "term": "Coupon discount",
+      "origin": "existing",
+      "aliases": [
+        "couponDiscount"
+      ],
+      "file": "src/cart/coupons.ts",
+      "what_it_is": "The shop's existing helper that works out how much a percent-off coupon takes off, in cents.",
+      "how_it_works": [
+        "**Gift cards:** never discounted.",
+        "**Rounding:** rounds down to a whole cent, so the shop never gives more than the coupon says."
+      ],
+      "pr_impact": "Not changed. The $50 check reuses it so it sees the same discount the customer sees.",
+      "related_steps": [
+        "step-1",
         "step-3"
       ]
     },
     {
-      "id": "money-in-cents",
-      "term": "Money in cents",
+      "id": "bulky-fee",
+      "term": "Bulky item fee",
       "origin": "existing",
-      "file": "src/cart/totals.ts",
-      "what_it_is": "The cart keeps every price as a whole number of cents, like `priceCents` on each item.",
-      "how_it_works": [
-        "**Why:** whole numbers add up exactly, while dollars with decimals can drift (0.1 + 0.2 isn't 0.3 in JavaScript).",
-        "**Display:** it only becomes text like $12.50 at the very end, through `formatMoney()`."
+      "aliases": [
+        "bulkyFeeCents"
       ],
-      "pr_impact": "The new rule follows the same habit, so 5000 means $50.00.",
+      "file": "src/cart/types.ts",
+      "what_it_is": "An optional per-item delivery fee for big things like furniture and lamps.",
+      "how_it_works": [
+        "**Per unit:** two lamps pay the fee twice.",
+        "**Missing:** most items don't have one, which counts as $0."
+      ],
+      "pr_impact": "Not changed. Free shipping removes the standard $5.99 but keeps these fees.",
       "related_steps": [
-        "step-1"
+        "step-1",
+        "step-2"
       ]
     },
     {
@@ -105,14 +149,14 @@
         "cartTotals"
       ],
       "file": "src/cart/totals.ts",
-      "what_it_is": "The function that adds up the subtotal, shipping and total that the cart page shows.",
+      "what_it_is": "The function that adds up the subtotal, discount, shipping and total that the cart page shows.",
       "how_it_works": [
-        "**Subtotal:** price times quantity for every item in the cart.",
-        "**Total:** subtotal plus shipping."
+        "**Total:** subtotal minus discount plus shipping.",
+        "**Callers:** the cart page, and any other page that shows an order total."
       ],
-      "pr_impact": "Only its shipping line changes: it now asks the free-shipping rule instead of always using $5.99.",
+      "pr_impact": "Gets a third `country` argument (default US) and now also returns the shipping quote.",
       "related_steps": [
-        "step-2"
+        "step-3"
       ]
     },
     {
@@ -123,15 +167,32 @@
         "FreeShippingBanner"
       ],
       "file": "src/components/FreeShippingBanner.tsx",
-      "what_it_is": "A one-line message at the top of the cart about free shipping.",
+      "what_it_is": "A message at the top of the cart about free shipping, with a progress bar.",
       "how_it_works": [
-        "**Under $50:** yellow, and says how much more to add.",
-        "**$50 or more:** green, and says you've got free shipping.",
-        "**Empty cart:** shows nothing."
+        "**Under $50:** yellow, says how much more to add, and fills a bar.",
+        "**$50 or more:** green, and mentions bulky fees if there are any.",
+        "**Gift cards only, or abroad:** hidden."
       ],
       "pr_impact": "New in this PR, placed right under the \"Your cart\" heading.",
       "related_steps": [
-        "step-3"
+        "step-4"
+      ]
+    },
+    {
+      "id": "shipping-country",
+      "term": "Shipping country",
+      "origin": "existing",
+      "aliases": [
+        "useShippingCountry"
+      ],
+      "file": "src/account/useShippingCountry.ts",
+      "what_it_is": "An existing hook that returns the two-letter country of the shopper's saved address.",
+      "how_it_works": [
+        "**Codes:** two-letter codes like `US` or `DE`."
+      ],
+      "pr_impact": "Not changed. The cart page now passes its answer into the shipping quote.",
+      "related_steps": [
+        "step-4"
       ]
     }
   ],
@@ -160,19 +221,20 @@
   "chapters": [
     {
       "id": "ch-rule",
-      "title": "The shipping rule",
-      "summary": "One tiny file decides what shipping costs, with tests for the $50 line.",
+      "title": "The free-shipping rule",
+      "summary": "One new file decides [[eligible-subtotal|what counts toward $50]] and [[shipping-quote|what shipping costs]], with tests for every tricky case.",
       "step_ids": [
-        "step-1"
+        "step-1",
+        "step-2"
       ]
     },
     {
       "id": "ch-cart",
       "title": "Using it in the cart",
-      "summary": "[[cart-totals|The cart total]] switches to the new rule, and the cart page gets a banner.",
+      "summary": "[[cart-totals|The cart total]] switches to the new rule, and the cart page gets [[free-shipping-banner|a progress banner]].",
       "step_ids": [
-        "step-2",
-        "step-3"
+        "step-3",
+        "step-4"
       ]
     }
   ],
@@ -180,73 +242,130 @@
     {
       "id": "step-1",
       "layer": "core",
-      "title": "The [[free-shipping-rule|free-shipping rule]] in one small file",
-      "explanation": "First we put the whole rule in one place: $50 or more ships free, anything less pays $5.99.",
+      "title": "What counts toward the $50",
+      "explanation": "First we decide [[eligible-subtotal|which part of the cart counts toward free shipping]], and the three answers [[shipping-quote|a shipping quote]] can give.",
       "table": {
         "headers": [
-          "Cart subtotal",
-          "Shipping",
-          "Banner says"
+          "In the cart",
+          "Counts toward $50?"
         ],
         "rows": [
           [
-            "$0 (empty cart)",
-            "$0",
-            "nothing"
+            "Regular items",
+            "Yes, after the coupon comes off"
           ],
           [
-            "$37.50",
-            "$5.99",
-            "Add $12.50 more to get free shipping."
+            "Gift cards",
+            "No, they're emailed, not shipped"
           ],
           [
-            "$49.99",
-            "$5.99",
-            "Add $0.01 more to get free shipping."
-          ],
-          [
-            "$50.00 or more",
-            "Free",
-            "You've got free shipping!"
+            "[[bulky-fee|Bulky items]] (like a lamp)",
+            "Yes, but their own delivery fee is still charged"
           ]
         ]
       },
       "diff_highlights": [
         {
           "hunk_id": "H002",
-          "lines": "1-3",
-          "title": "All money is in cents",
-          "explanation": "Prices are [[money-in-cents|whole cents]] here, so 5000 means $50.00 and 599 means $5.99, which matches how the rest of the cart stores money and avoids rounding surprises."
+          "lines": "9-12",
+          "title": "One of three answers",
+          "explanation": "A quote is one of three shapes, and only the domestic one has `leftForFreeCents`, so TypeScript forces the total and the banner to handle every case instead of guessing."
         },
         {
           "hunk_id": "H002",
-          "lines": "7-8",
-          "title": "Empty cart, and exactly $50",
-          "explanation": "An empty cart still pays nothing, same as before, and the `>=` means a cart of exactly $50.00 already ships free."
-        },
-        {
-          "hunk_id": "H001",
-          "lines": "4-10",
-          "title": "The $50 line is pinned by tests",
-          "explanation": "These two tests sit on either side of the line: $49.99 still pays $5.99, while exactly $50.00 ships free, so nobody can quietly turn `>=` into `>` later."
+          "lines": "16-18",
+          "title": "Gift cards out, coupon off",
+          "explanation": "Gift cards are dropped before adding up, so a $50 gift card can't unlock free shipping on a $5 mug, and [[coupon-discount|the coupon comes off]] before we compare with $50."
         }
       ],
       "hunk_ids": [
-        "H002",
-        "H001"
+        "H002:1-19"
       ]
     },
     {
       "id": "step-2",
-      "layer": "wiring",
-      "title": "The cart total uses the new rule",
-      "explanation": "Next we swap the old flat $5.99 in [[cart-totals|`cartTotals()`]] for the new rule, so the order summary follows it.",
+      "layer": "core",
+      "title": "Pricing the shipping",
+      "explanation": "Next, `shippingQuote()` turns the cart into one answer: nothing to ship, a flat rate abroad, or a US price with how much is left to $50.",
       "diff_highlights": [
         {
-          "hunk_id": "H004",
-          "lines": "10",
-          "title": "The one-line swap",
-          "explanation": "The old line charged $5.99 whenever the cart had any items; now [[free-shipping-rule|`shippingCost()`]] decides from the subtotal and still returns $0 for an empty cart."
+          "hunk_id": "H002",
+          "lines": "26-29",
+          "title": "Gift cards only? Nothing to ship",
+          "explanation": "If every item is a gift card there's nothing to put in a box, so we return a separate answer instead of pretending it's a free US order."
+        },
+        {
+          "hunk_id": "H002",
+          "lines": "32-35",
+          "title": "Bulky fees always apply",
+          "explanation": "Each [[bulky-fee|bulky item adds its own delivery fee]] per unit, and that fee is added on top later even when the $50 makes standard shipping free."
+        },
+        {
+          "hunk_id": "H002",
+          "lines": "37-39",
+          "title": "Abroad: flat rate, no free shipping",
+          "explanation": "Outside the US free shipping doesn't exist, so we return early with the flat $19.99 rate plus bulky fees and never work out how much is left."
+        },
+        {
+          "hunk_id": "H002",
+          "lines": "41-43",
+          "title": "The actual $50 check",
+          "explanation": "The amount left never goes below zero, and a cart at or over $50 pays $0 base shipping but still keeps any bulky fees."
+        },
+        {
+          "hunk_id": "H001",
+          "lines": "31-34",
+          "title": "The sneaky coupon test",
+          "explanation": "A $55 jacket with 10% off costs $49.50, so this cart still pays $5.99 and is exactly 50 cents short of free shipping."
+        }
+      ],
+      "visuals": [
+        {
+          "src": "cart-bulky.png",
+          "source_label": "Cart page with a bulky item",
+          "caption": "A $62.50 cart ships free, but the floor lamp's $15.00 delivery fee is still charged.",
+          "annotations": [
+            {
+              "kind": "circle",
+              "x": 92.4,
+              "y": 39.9,
+              "rx": 5.2,
+              "ry": 4.4,
+              "label": "Bulky fee still charged"
+            },
+            {
+              "kind": "box",
+              "x": 12.0,
+              "y": 71.0,
+              "w": 22.5,
+              "h": 7.5,
+              "label": "Bulky item"
+            }
+          ]
+        }
+      ],
+      "hunk_ids": [
+        "H002:20-44",
+        "H001"
+      ]
+    },
+    {
+      "id": "step-3",
+      "layer": "wiring",
+      "title": "The cart total uses the quote",
+      "explanation": "Now `cartTotals()` asks the new rule for shipping instead of always adding $5.99.",
+      "diff_highlights": [
+        {
+          "hunk_id": "H003",
+          "lines": "9",
+          "title": "Country defaults to US",
+          "explanation": "Other pages that call `cartTotals()` with two arguments keep compiling, but they also quietly get US shipping prices until they pass a country."
+        },
+        {
+          "hunk_id": "H003",
+          "lines": "12-14",
+          "title": "Turning the quote into a number",
+          "explanation": "Only `nothing_to_ship` has no `costCents`, so it becomes $0 here, and the whole quote is returned too so the banner reads the same answer as the total."
         }
       ],
       "callouts": [
@@ -256,35 +375,52 @@
         }
       ],
       "hunk_ids": [
-        "H003",
-        "H004"
+        "H003"
       ]
     },
     {
-      "id": "step-3",
+      "id": "step-4",
       "layer": "wiring",
-      "title": "The \"almost there\" banner on the cart page",
-      "explanation": "Last, a [[free-shipping-banner|small banner at the top of the cart]] tells shoppers how close they are to free shipping.",
+      "title": "The progress banner on the cart page",
+      "explanation": "Last, the cart page [[shipping-country|reads the shopper's country]] and shows [[free-shipping-banner|a banner with a progress bar]] toward free shipping.",
       "points": [
         {
-          "anchor": "Empty cart",
-          "text": "The banner shows nothing at all."
-        },
-        {
           "anchor": "Under $50",
-          "text": "It says how much more to add, using the same rule as the total."
+          "text": "It says how much more to add and fills a bar."
         },
         {
           "anchor": "$50 or more",
           "text": "It turns green and says you've got free shipping."
+        },
+        {
+          "anchor": "Gift cards only, or abroad",
+          "text": "It doesn't show at all."
         }
       ],
       "diff_highlights": [
         {
-          "hunk_id": "H005",
-          "lines": "7-12",
-          "title": "Three cases, top to bottom",
-          "explanation": "Empty cart returns nothing, then if nothing is left to add we show the green message, and every other cart falls through to the \"add $X more\" text below."
+          "hunk_id": "H004",
+          "lines": "7",
+          "title": "Only US orders see it",
+          "explanation": "Free shipping only exists for US orders, so the banner stays hidden both for gift-card-only carts and for shoppers abroad."
+        },
+        {
+          "hunk_id": "H004",
+          "lines": "13",
+          "title": "Why `> 0` and not just `&&`",
+          "explanation": "Writing `quote.costCents && …` would print a stray 0 on the page when there's no bulky fee, so `> 0` turns it into true or false first."
+        },
+        {
+          "hunk_id": "H004",
+          "lines": "18-19",
+          "title": "Round down, never up",
+          "explanation": "Rounding down keeps the bar from showing a full 100% at $49.99, which would look like free shipping while the shopper is still a cent short."
+        },
+        {
+          "hunk_id": "H004",
+          "lines": "24-31",
+          "title": "A bar screen readers understand",
+          "explanation": "The bar is a real progressbar with a label and 0 to 100 values, so screen readers announce the progress instead of skipping a plain colored box."
         }
       ],
       "visuals": [
@@ -310,31 +446,30 @@
           "role": "after",
           "label": "After",
           "source_label": "Cart page (after)",
-          "caption": "After: the same cart shows it's only $12.50 away from free shipping.",
+          "caption": "After: the same cart shows it's $12.50 away, with the bar three quarters full.",
           "annotations": [
             {
               "kind": "box",
               "x": 3.0,
-              "y": 29.8,
+              "y": 28.0,
               "w": 59.8,
-              "h": 12.4,
+              "h": 15.0,
               "label": "New banner"
             },
             {
               "kind": "circle",
               "x": 92.7,
-              "y": 42.6,
+              "y": 39.9,
               "rx": 5.0,
-              "ry": 5.0,
+              "ry": 4.6,
               "label": "Still $5.99 under $50"
             }
           ]
         }
       ],
       "hunk_ids": [
-        "H005",
-        "H006",
-        "H007"
+        "H004",
+        "H005"
       ]
     }
   ],

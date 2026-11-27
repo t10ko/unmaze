@@ -1,104 +1,183 @@
 diff --git a/src/cart/shipping.test.ts b/src/cart/shipping.test.ts
 new file mode 100644
-index 0000000..41074ab
+index 0000000..1d9d22a
 --- /dev/null
 +++ b/src/cart/shipping.test.ts
-@@ -0,0 +1,25 @@
-+import { amountLeftForFreeShipping, shippingCost } from "./shipping";
+@@ -0,0 +1,51 @@
++import type { CartItem } from "./types";
++import { shippingQuote } from "./shipping";
 +
-+describe("shippingCost", () => {
-+  it("charges $5.99 under $50", () => {
-+    expect(shippingCost(4999)).toBe(599);
++const item = (id: string, priceCents: number, extra: Partial<CartItem> = {}): CartItem => ({
++  id,
++  name: id,
++  priceCents,
++  quantity: 1,
++  kind: "product",
++  ...extra,
++});
++
++const tote = item("tote", 2250);
++const mug = item("mug", 1500);
++const lamp = item("lamp", 4000, { bulkyFeeCents: 1500 });
++const giftCard = item("gift-card", 5000, { kind: "gift_card" });
++
++describe("shippingQuote", () => {
++  it("charges $5.99 and says how much is left under $50", () => {
++    expect(shippingQuote([tote, mug], null, "US")).toEqual({
++      kind: "domestic",
++      costCents: 599,
++      leftForFreeCents: 1250,
++    });
 +  });
 +
 +  it("is free at exactly $50", () => {
-+    expect(shippingCost(5000)).toBe(0);
++    expect(shippingQuote([item("rug", 5000)], null, "US")).toMatchObject({ costCents: 0 });
 +  });
 +
-+  it("is free for an empty cart", () => {
-+    expect(shippingCost(0)).toBe(0);
-+  });
-+});
-+
-+describe("amountLeftForFreeShipping", () => {
-+  it("says how much is left", () => {
-+    expect(amountLeftForFreeShipping(3750)).toBe(1250);
++  it("checks the $50 after the coupon comes off", () => {
++    const quote = shippingQuote([item("jacket", 5500)], { percentOff: 10 }, "US");
++    expect(quote).toMatchObject({ costCents: 599, leftForFreeCents: 50 });
 +  });
 +
-+  it("never goes below zero", () => {
-+    expect(amountLeftForFreeShipping(8000)).toBe(0);
++  it("does not count gift cards toward the $50", () => {
++    expect(shippingQuote([mug, giftCard], null, "US")).toMatchObject({ leftForFreeCents: 3500 });
++  });
++
++  it("still charges the bulky fee when shipping is free", () => {
++    expect(shippingQuote([lamp, tote], null, "US")).toMatchObject({ costCents: 1500 });
++  });
++
++  it("uses the flat international rate abroad, even over $50", () => {
++    expect(shippingQuote([lamp, tote], null, "DE")).toEqual({ kind: "international", costCents: 3499 });
++  });
++
++  it("has nothing to ship when the cart is only gift cards", () => {
++    expect(shippingQuote([giftCard], null, "US")).toEqual({ kind: "nothing_to_ship" });
 +  });
 +});
 diff --git a/src/cart/shipping.ts b/src/cart/shipping.ts
 new file mode 100644
-index 0000000..e985411
+index 0000000..5087d49
 --- /dev/null
 +++ b/src/cart/shipping.ts
-@@ -0,0 +1,14 @@
-+// Orders of $50.00 or more ship for free. All money is in cents.
+@@ -0,0 +1,44 @@
++import type { CartItem } from "./types";
++import { couponDiscount, type Coupon } from "./coupons";
++
++// Orders of $50.00 or more ship free inside the US. All money is in cents.
 +export const FREE_SHIPPING_MIN_CENTS = 5000;
 +export const STANDARD_SHIPPING_CENTS = 599;
++export const INTERNATIONAL_SHIPPING_CENTS = 1999;
 +
-+/** What the customer pays for shipping, in cents. */
-+export function shippingCost(subtotalCents: number): number {
-+  if (subtotalCents === 0) return 0; // empty cart: nothing to ship
-+  return subtotalCents >= FREE_SHIPPING_MIN_CENTS ? 0 : STANDARD_SHIPPING_CENTS;
++export type ShippingQuote =
++  | { kind: "nothing_to_ship" }
++  | { kind: "international"; costCents: number }
++  | { kind: "domestic"; costCents: number; leftForFreeCents: number };
++
++/** What counts toward the $50: physical items only, after the coupon. */
++export function eligibleSubtotalCents(items: CartItem[], coupon: Coupon | null): number {
++  const physical = items.filter((item) => item.kind !== "gift_card");
++  const merchandise = physical.reduce((sum, item) => sum + item.priceCents * item.quantity, 0);
++  return merchandise - couponDiscount(physical, coupon);
 +}
 +
-+/** How much more the customer must add to get free shipping, in cents. */
-+export function amountLeftForFreeShipping(subtotalCents: number): number {
-+  return Math.max(0, FREE_SHIPPING_MIN_CENTS - subtotalCents);
++export function shippingQuote(
++  items: CartItem[],
++  coupon: Coupon | null,
++  country: string,
++): ShippingQuote {
++  // Gift cards are emailed, so a cart of only gift cards ships nothing.
++  if (!items.some((item) => item.kind !== "gift_card")) {
++    return { kind: "nothing_to_ship" };
++  }
++
++  // Bulky items pay their own delivery fee, even when shipping is free.
++  const bulkyFees = items.reduce(
++    (sum, item) => sum + (item.bulkyFeeCents ?? 0) * item.quantity,
++    0,
++  );
++
++  if (country !== "US") {
++    return { kind: "international", costCents: INTERNATIONAL_SHIPPING_CENTS + bulkyFees };
++  }
++
++  const leftForFreeCents = Math.max(0, FREE_SHIPPING_MIN_CENTS - eligibleSubtotalCents(items, coupon));
++  const base = leftForFreeCents === 0 ? 0 : STANDARD_SHIPPING_CENTS;
++  return { kind: "domestic", costCents: base + bulkyFees, leftForFreeCents };
 +}
 diff --git a/src/cart/totals.ts b/src/cart/totals.ts
-index c6f82b7..6cabfb3 100644
+index 55b22fe..c17bd1b 100644
 --- a/src/cart/totals.ts
 +++ b/src/cart/totals.ts
-@@ -1,6 +1,5 @@
+@@ -1,15 +1,15 @@
  import type { CartItem } from "./types";
+ import { couponDiscount, type Coupon } from "./coupons";
 -
 -const SHIPPING_CENTS = 599; // flat $5.99 on every order
-+import { shippingCost } from "./shipping";
++import { shippingQuote } from "./shipping";
  
  export function subtotal(items: CartItem[]): number {
    return items.reduce((sum, item) => sum + item.priceCents * item.quantity, 0);
-@@ -8,6 +7,6 @@ export function subtotal(items: CartItem[]): number {
+ }
  
- export function cartTotals(items: CartItem[]) {
+-export function cartTotals(items: CartItem[], coupon: Coupon | null) {
++export function cartTotals(items: CartItem[], coupon: Coupon | null, country = "US") {
    const sub = subtotal(items);
+   const discount = couponDiscount(items, coupon);
 -  const shipping = items.length > 0 ? SHIPPING_CENTS : 0;
-+  const shipping = shippingCost(sub);
-   return { subtotal: sub, shipping, total: sub + shipping };
+-  return { subtotal: sub, discount, shipping, total: sub - discount + shipping };
++  const quote = shippingQuote(items, coupon, country);
++  const shipping = quote.kind === "nothing_to_ship" ? 0 : quote.costCents;
++  return { subtotal: sub, discount, shipping, total: sub - discount + shipping, quote };
  }
 diff --git a/src/components/FreeShippingBanner.tsx b/src/components/FreeShippingBanner.tsx
 new file mode 100644
-index 0000000..890925a
+index 0000000..d34d8a2
 --- /dev/null
 +++ b/src/components/FreeShippingBanner.tsx
-@@ -0,0 +1,19 @@
-+import { amountLeftForFreeShipping } from "../cart/shipping";
+@@ -0,0 +1,36 @@
++import { FREE_SHIPPING_MIN_CENTS, type ShippingQuote } from "../cart/shipping";
 +import { formatMoney } from "../utils/money";
 +
-+type Props = { subtotalCents: number };
++type Props = { quote: ShippingQuote };
 +
-+export function FreeShippingBanner({ subtotalCents }: Props) {
-+  if (subtotalCents === 0) return null;
++export function FreeShippingBanner({ quote }: Props) {
++  if (quote.kind !== "domestic") return null;
 +
-+  const left = amountLeftForFreeShipping(subtotalCents);
-+  if (left === 0) {
-+    return <p className="banner banner--success">You've got free shipping!</p>;
++  if (quote.leftForFreeCents === 0) {
++    return (
++      <p className="banner banner--success" role="status">
++        You've got free shipping!
++        {quote.costCents > 0 && " Bulky items still have a delivery fee."}
++      </p>
++    );
 +  }
 +
++  const spentCents = FREE_SHIPPING_MIN_CENTS - quote.leftForFreeCents;
++  const percent = Math.floor((spentCents / FREE_SHIPPING_MIN_CENTS) * 100);
++
 +  return (
-+    <p className="banner">
-+      Add {formatMoney(left)} more to get free shipping.
-+    </p>
++    <div className="banner" role="status">
++      <p>Add {formatMoney(quote.leftForFreeCents)} more to get free shipping.</p>
++      <div
++        className="banner__bar"
++        role="progressbar"
++        aria-label="Progress to free shipping"
++        aria-valuemin={0}
++        aria-valuemax={100}
++        aria-valuenow={percent}
++      >
++        <div className="banner__fill" style={{ width: `${percent}%` }} />
++      </div>
++    </div>
 +  );
 +}
 diff --git a/src/pages/CartPage.tsx b/src/pages/CartPage.tsx
-index e6451e3..55ae499 100644
+index 72f63bb..f13b4a2 100644
 --- a/src/pages/CartPage.tsx
 +++ b/src/pages/CartPage.tsx
-@@ -1,6 +1,7 @@
+@@ -1,15 +1,19 @@
++import { useShippingCountry } from "../account/useShippingCountry";
  import { useCart } from "../cart/useCart";
  import { cartTotals } from "../cart/totals";
  import { CartLine } from "../components/CartLine";
@@ -106,11 +185,15 @@ index e6451e3..55ae499 100644
  import { Summary } from "../components/Summary";
  
  export function CartPage() {
-@@ -10,6 +11,7 @@ export function CartPage() {
+   const { items, coupon } = useCart();
+-  const totals = cartTotals(items, coupon);
++  const country = useShippingCountry();
++  const totals = cartTotals(items, coupon, country);
+ 
    return (
      <main className="cart">
        <h1>Your cart</h1>
-+      <FreeShippingBanner subtotalCents={totals.subtotal} />
++      <FreeShippingBanner quote={totals.quote} />
        {items.map((item) => (
          <CartLine key={item.id} item={item} />
        ))}
