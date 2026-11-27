@@ -1,0 +1,344 @@
+{
+  "title": "PR #27: Free shipping on orders of $50 or more",
+  "overview": {
+    "links": [
+      {
+        "kind": "ticket",
+        "label": "SHOP-88",
+        "url": "https://linear.app/acme/issue/SHOP-88"
+      }
+    ],
+    "whole_task": "We're giving [[free-shipping-rule|free shipping on orders of $50 or more]], and the cart now tells shoppers how much more they need to add to get it.",
+    "footprint": [
+      {
+        "path": "src",
+        "label": "Shop web app",
+        "change": "A new free-shipping rule that the cart total and a new banner on the cart page both use.",
+        "entry_points": [
+          "shippingCost()",
+          "amountLeftForFreeShipping()",
+          "<FreeShippingBanner />"
+        ]
+      }
+    ],
+    "ship_facts": {
+      "schema_migrations": "none",
+      "data_backfills": "none",
+      "config_and_secrets": "none",
+      "feature_flags": "none",
+      "dependencies": "none",
+      "api_contracts": "none",
+      "deploy_order": "Just a normal web app deploy."
+    },
+    "before_state": "Every order paid a flat $5.99 for shipping, no matter how big it was.",
+    "after_state": "Orders of $50 or more ship free, and the cart shows how much more you need to add to get there.",
+    "visuals": [
+      {
+        "src": "cart-free.png",
+        "source_label": "Cart page (after this PR)",
+        "caption": "Here's the end result: a $62 cart gets [[free-shipping-banner|the green free-shipping banner]] and pays $0.00 for shipping.",
+        "annotations": [
+          {
+            "kind": "box",
+            "x": 3.0,
+            "y": 22.2,
+            "w": 59.8,
+            "h": 9.0,
+            "label": "New banner"
+          },
+          {
+            "kind": "circle",
+            "x": 92.7,
+            "y": 31.8,
+            "rx": 5.0,
+            "ry": 3.6,
+            "label": "Free shipping"
+          }
+        ]
+      }
+    ]
+  },
+  "concept_candidates_extracted": true,
+  "concept_sweep_completed": true,
+  "concepts": [
+    {
+      "id": "free-shipping-rule",
+      "term": "Free-shipping rule",
+      "origin": "introduced",
+      "aliases": [
+        "shippingCost",
+        "amountLeftForFreeShipping"
+      ],
+      "file": "src/cart/shipping.ts",
+      "what_it_is": "The one place that decides shipping: $50.00 or more ships free, anything less pays $5.99.",
+      "how_it_works": [
+        "**`shippingCost()`:** returns 0 for an empty cart or a subtotal of 5000 cents or more, and 599 otherwise.",
+        "**`amountLeftForFreeShipping()`:** returns how many cents are left to reach 5000, and never goes below 0."
+      ],
+      "pr_impact": "New in this PR. The cart total and the banner both call it, so they can't disagree.",
+      "related_steps": [
+        "step-1",
+        "step-2",
+        "step-3"
+      ]
+    },
+    {
+      "id": "money-in-cents",
+      "term": "Money in cents",
+      "origin": "existing",
+      "file": "src/cart/totals.ts",
+      "what_it_is": "The cart keeps every price as a whole number of cents, like `priceCents` on each item.",
+      "how_it_works": [
+        "**Why:** whole numbers add up exactly, while dollars with decimals can drift (0.1 + 0.2 isn't 0.3 in JavaScript).",
+        "**Display:** it only becomes text like $12.50 at the very end, through `formatMoney()`."
+      ],
+      "pr_impact": "The new rule follows the same habit, so 5000 means $50.00.",
+      "related_steps": [
+        "step-1"
+      ]
+    },
+    {
+      "id": "cart-totals",
+      "term": "Cart totals",
+      "origin": "existing",
+      "aliases": [
+        "cartTotals"
+      ],
+      "file": "src/cart/totals.ts",
+      "what_it_is": "The function that adds up the subtotal, shipping and total that the cart page shows.",
+      "how_it_works": [
+        "**Subtotal:** price times quantity for every item in the cart.",
+        "**Total:** subtotal plus shipping."
+      ],
+      "pr_impact": "Only its shipping line changes: it now asks the free-shipping rule instead of always using $5.99.",
+      "related_steps": [
+        "step-2"
+      ]
+    },
+    {
+      "id": "free-shipping-banner",
+      "term": "Free shipping banner",
+      "origin": "introduced",
+      "aliases": [
+        "FreeShippingBanner"
+      ],
+      "file": "src/components/FreeShippingBanner.tsx",
+      "what_it_is": "A one-line message at the top of the cart about free shipping.",
+      "how_it_works": [
+        "**Under $50:** yellow, and says how much more to add.",
+        "**$50 or more:** green, and says you've got free shipping.",
+        "**Empty cart:** shows nothing."
+      ],
+      "pr_impact": "New in this PR, placed right under the \"Your cart\" heading.",
+      "related_steps": [
+        "step-3"
+      ]
+    }
+  ],
+  "file_scopes": {
+    "src/cart/shipping.ts": {
+      "surface": "Frontend",
+      "area": "Shipping rule"
+    },
+    "src/cart/shipping.test.ts": {
+      "surface": "Tests & QA",
+      "area": "Shipping rule tests"
+    },
+    "src/cart/totals.ts": {
+      "surface": "Frontend",
+      "area": "Cart total"
+    },
+    "src/components/FreeShippingBanner.tsx": {
+      "surface": "Frontend",
+      "area": "Free shipping banner"
+    },
+    "src/pages/CartPage.tsx": {
+      "surface": "Frontend",
+      "area": "Cart page"
+    }
+  },
+  "chapters": [
+    {
+      "id": "ch-rule",
+      "title": "The shipping rule",
+      "summary": "One tiny file decides what shipping costs, with tests for the $50 line.",
+      "step_ids": [
+        "step-1"
+      ]
+    },
+    {
+      "id": "ch-cart",
+      "title": "Using it in the cart",
+      "summary": "[[cart-totals|The cart total]] switches to the new rule, and the cart page gets a banner.",
+      "step_ids": [
+        "step-2",
+        "step-3"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "layer": "core",
+      "title": "The [[free-shipping-rule|free-shipping rule]] in one small file",
+      "explanation": "First we put the whole rule in one place: $50 or more ships free, anything less pays $5.99.",
+      "table": {
+        "headers": [
+          "Cart subtotal",
+          "Shipping",
+          "Banner says"
+        ],
+        "rows": [
+          [
+            "$0 (empty cart)",
+            "$0",
+            "nothing"
+          ],
+          [
+            "$37.50",
+            "$5.99",
+            "Add $12.50 more to get free shipping."
+          ],
+          [
+            "$49.99",
+            "$5.99",
+            "Add $0.01 more to get free shipping."
+          ],
+          [
+            "$50.00 or more",
+            "Free",
+            "You've got free shipping!"
+          ]
+        ]
+      },
+      "diff_highlights": [
+        {
+          "hunk_id": "H002",
+          "lines": "1-3",
+          "title": "All money is in cents",
+          "explanation": "Prices are [[money-in-cents|whole cents]] here, so 5000 means $50.00 and 599 means $5.99, which matches how the rest of the cart stores money and avoids rounding surprises."
+        },
+        {
+          "hunk_id": "H002",
+          "lines": "7-8",
+          "title": "Empty cart, and exactly $50",
+          "explanation": "An empty cart still pays nothing, same as before, and the `>=` means a cart of exactly $50.00 already ships free."
+        },
+        {
+          "hunk_id": "H001",
+          "lines": "4-10",
+          "title": "The $50 line is pinned by tests",
+          "explanation": "These two tests sit on either side of the line: $49.99 still pays $5.99, while exactly $50.00 ships free, so nobody can quietly turn `>=` into `>` later."
+        }
+      ],
+      "hunk_ids": [
+        "H002",
+        "H001"
+      ]
+    },
+    {
+      "id": "step-2",
+      "layer": "wiring",
+      "title": "The cart total uses the new rule",
+      "explanation": "Next we swap the old flat $5.99 in [[cart-totals|`cartTotals()`]] for the new rule, so the order summary follows it.",
+      "diff_highlights": [
+        {
+          "hunk_id": "H004",
+          "lines": "10",
+          "title": "The one-line swap",
+          "explanation": "The old line charged $5.99 whenever the cart had any items; now [[free-shipping-rule|`shippingCost()`]] decides from the subtotal and still returns $0 for an empty cart."
+        }
+      ],
+      "callouts": [
+        {
+          "kind": "assumption",
+          "text": "Heads up: this only changes the total the web app shows. Check that the payment server charges the same way, or a $60 order could show free shipping and still be charged $5.99."
+        }
+      ],
+      "hunk_ids": [
+        "H003",
+        "H004"
+      ]
+    },
+    {
+      "id": "step-3",
+      "layer": "wiring",
+      "title": "The \"almost there\" banner on the cart page",
+      "explanation": "Last, a [[free-shipping-banner|small banner at the top of the cart]] tells shoppers how close they are to free shipping.",
+      "points": [
+        {
+          "anchor": "Empty cart",
+          "text": "The banner shows nothing at all."
+        },
+        {
+          "anchor": "Under $50",
+          "text": "It says how much more to add, using the same rule as the total."
+        },
+        {
+          "anchor": "$50 or more",
+          "text": "It turns green and says you've got free shipping."
+        }
+      ],
+      "diff_highlights": [
+        {
+          "hunk_id": "H005",
+          "lines": "7-12",
+          "title": "Three cases, top to bottom",
+          "explanation": "Empty cart returns nothing, then if nothing is left to add we show the green message, and every other cart falls through to the \"add $X more\" text below."
+        }
+      ],
+      "visuals": [
+        {
+          "src": "cart-before.png",
+          "role": "before",
+          "label": "Before",
+          "source_label": "Cart page (before)",
+          "caption": "Before: a $37.50 cart just pays $5.99, with no hint that free shipping exists.",
+          "annotations": [
+            {
+              "kind": "circle",
+              "x": 92.7,
+              "y": 42.6,
+              "rx": 5.0,
+              "ry": 5.0,
+              "label": "Always $5.99"
+            }
+          ]
+        },
+        {
+          "src": "cart-after.png",
+          "role": "after",
+          "label": "After",
+          "source_label": "Cart page (after)",
+          "caption": "After: the same cart shows it's only $12.50 away from free shipping.",
+          "annotations": [
+            {
+              "kind": "box",
+              "x": 3.0,
+              "y": 29.8,
+              "w": 59.8,
+              "h": 12.4,
+              "label": "New banner"
+            },
+            {
+              "kind": "circle",
+              "x": 92.7,
+              "y": 42.6,
+              "rx": 5.0,
+              "ry": 5.0,
+              "label": "Still $5.99 under $50"
+            }
+          ]
+        }
+      ],
+      "hunk_ids": [
+        "H005",
+        "H006",
+        "H007"
+      ]
+    }
+  ],
+  "mechanical": {
+    "groups": []
+  }
+}
