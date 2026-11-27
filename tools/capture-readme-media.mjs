@@ -214,8 +214,9 @@ const scenes = {
     const s2 = await spot(c, ".arc-subtab", { index: 1, scroll: false });
     await moveTo(c, s2.x, s2.y); await g.frame(c, 0.5);
     await click(c, s2.x, s2.y); await g.frame(c, 1.8);
-    await spot(c, ".step-panel:not([hidden]) .hl-note", { block: "start", offsetY: -110 });
-    await g.frame(c, 2.6);
+    const wn = await spot(c, ".step-panel:not([hidden]) .hl-note-title", { block: "start", offsetY: -110 });
+    await moveTo(c, wn.x, wn.y); await g.frame(c, 0.8);
+    await click(c, wn.x, wn.y); await g.frame(c, 2.6);
     await g.scrollFrames(c, 380, 4);
     await g.frame(c, 2.6);
     const ch2 = await spot(c, ".arc-chapter-btn", { index: 1, scroll: false });
@@ -254,11 +255,12 @@ const scenes = {
     const g = new Gif("code-notes");
     await spot(c, ".step-panel:not([hidden]) .hl-note", { block: "start", offsetY: -120 });
     await moveTo(c, 1300, 200);
-    await g.frame(c, 2.2);
-    const n2 = await spot(c, ".step-panel:not([hidden]) .hl-note", { index: 1, scroll: false });
-    await moveTo(c, n2.x - 200, n2.y); await g.frame(c, 2.2);
-    const n3 = await spot(c, ".step-panel:not([hidden]) .hl-note", { index: 2, scroll: false });
-    await moveTo(c, n3.x - 200, n3.y); await g.frame(c, 2.0);
+    await g.frame(c, 2.0);
+    for (const i of [0, 1]) {
+      const n = await spot(c, ".step-panel:not([hidden]) .hl-note-title", { index: i, scroll: false });
+      await moveTo(c, n.x, n.y); await g.frame(c, 0.9);
+      await click(c, n.x, n.y); await g.frame(c, 2.4);
+    }
     const row = await spot(c, '.step-panel:not([hidden]) .dl.dl-has-hl[data-hl-id$="hl1"]', { scroll: false });
     await moveTo(c, row.x - 150, row.y); await g.frame(c, 1.8);
     const tog = await spot(c, ".step-panel:not([hidden]) .notes-toggle-btn", { block: "center" });
@@ -368,6 +370,7 @@ const scenes = {
     await js(c, `window.scrollTo(0, 0)`); await sleep(200);
     shots.push(join(OUT_DIR, "_m1.png")); await shot(c, shots[0]);
     await panel(c, 2);
+    await js(c, `document.querySelector(".step-panel:not([hidden]) .hl-note-head").click()`);
     await spot(c, ".step-panel:not([hidden]) .hl-note", { block: "start", offsetY: -80 });
     shots.push(join(OUT_DIR, "_m2.png")); await shot(c, shots[1]);
     await spot(c, ".step-panel:not([hidden]) .gh-thread", { block: "start", offsetY: -80 });
