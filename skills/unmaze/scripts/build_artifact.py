@@ -1151,11 +1151,10 @@ def _render_visual_card_html(
     <span class="vis-head-left">{role_badge}<span class="vis-badge">{esc(source_label)}</span></span>
     <div class="visual-actions">
       {figma_link_html}
-      <button type="button" class="vis-zoom-btn" aria-label="Zoom {esc(source_label)} screenshot">Zoom</button>
     </div>
   </div>
   <div class="visual-stage-wrap">
-    <div class="visual-stage" style="--vis-ar: {aspect:.4f}">
+    <div class="visual-stage" style="--vis-ar: {aspect:.4f}" role="button" tabindex="0" aria-label="Zoom {esc(source_label)} screenshot" title="Click to zoom">
       <img src="{esc(resolved_src)}" alt="{esc(alt_text)}" width="{w}" height="{h}"{loading_attr}>
       {overlay_svg}
     </div>
@@ -2908,12 +2907,16 @@ def render_inline_note_html(hl_entry: dict[str, Any], concept_lookup: dict[str, 
         if hl_entry.get("pr_url")
         else f'<span class="hl-note-lines">{esc(lines_label)}</span>'
     )
+    uid = esc(hl_entry["uid"])
     return (
-        f'<span class="hl-note" role="note" id="hl-note-{esc(hl_entry["uid"])}" data-hl-trigger="{esc(hl_entry["uid"])}">'
+        f'<span class="hl-note" role="note" id="hl-note-{uid}" data-hl-trigger="{uid}">'
+        f'<button type="button" class="hl-note-head" aria-expanded="false" aria-controls="hl-body-{uid}">'
         f'<span class="hl-num" aria-hidden="true">{esc(hl_entry["num"])}</span>'
-        f'<span class="hl-note-text"><strong class="hl-note-title">{fmt_prose(title, concept_lookup)}{sep}</strong> '
-        f'{fmt_prose(hl_entry["explanation"], concept_lookup)}</span>'
-        f"{lines_html}</span>"
+        f'<strong class="hl-note-title">{fmt_prose(title.rstrip(".:!?"), {})}</strong>'
+        f'<span class="hl-chev" aria-hidden="true">▸</span></button>'
+        f"{lines_html}"
+        f'<span class="hl-note-text" id="hl-body-{uid}">{fmt_prose(hl_entry["explanation"], concept_lookup)}</span>'
+        f"</span>"
     )
 
 
@@ -3583,7 +3586,15 @@ def build_html_artifact(
         eager=True,
         block_id="overview",
     )
-    source_links_html = render_source_links_html(collect_overview_links(plan))
+    all_links = collect_overview_links(plan)
+    source_links_html = render_source_links_html([lk for lk in all_links if lk["kind"] != "ticket"])
+    ticket_topbar_html = "".join(
+        f'<a class="ticket-cta-btn" href="{esc(lk["url"])}" target="_blank" rel="noopener noreferrer" '
+        f'title="Open the ticket"><span class="ticket-cta-kind">Ticket</span> {esc(lk["label"])} '
+        f'<span aria-hidden="true">↗</span></a>'
+        for lk in all_links
+        if lk["kind"] == "ticket"
+    )
     overview["_diagram_html"] = render_diagram_html(overview.get("_diagram"), manifest)
     this_pr_block_html = render_this_pr_block_html(
         overview, build_change_footprint(manifest, plan), concept_lookup
@@ -3868,15 +3879,7 @@ def build_html_artifact(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="color-scheme" content="light dark">
-  <script>
-    try {{
-      const saved = localStorage.getItem("unmaze-color-scheme");
-      if (saved === "light" || saved === "dark") {{
-        document.querySelector('meta[name="color-scheme"]').content = saved;
-      }}
-    }} catch (_) {{}}
-  </script>
+  <meta name="color-scheme" content="dark">
   <title>{esc(title)} — unmaze</title>
   <style>
     :root {{
@@ -3926,133 +3929,31 @@ def build_html_artifact(
       --num-light: #0550ae;
       --num-dark: #79c0ff;
 
-      --rail: var(--rail-light);
-      --bg: var(--bg-light);
-      --surface: var(--surface-light);
-      --subtle: var(--subtle-light);
-      --border: var(--border-light);
-      --text: var(--text-light);
-      --muted: var(--muted-light);
-      --accent: var(--accent-light);
-      --accent-soft: var(--accent-soft-light);
-      --add-bg: var(--add-bg-light);
-      --add-fg: var(--add-fg-light);
-      --del-bg: var(--del-bg-light);
-      --del-fg: var(--del-fg-light);
-      --warn-bg: var(--warn-bg-light);
-      --warn-fg: var(--warn-fg-light);
-      --tok-kw: var(--kw-light);
-      --tok-str: var(--str-light);
-      --tok-cmt: var(--cmt-light);
-      --tok-typ: var(--typ-light);
-      --tok-fn: var(--fn-light);
-      --tok-num: var(--num-light);
-      --scroll-thumb: #9ca3af;
+      /* unmaze guides are dark only. */
+      color-scheme: dark;
+      --rail: var(--rail-dark);
+      --bg: var(--bg-dark);
+      --surface: var(--surface-dark);
+      --subtle: var(--subtle-dark);
+      --border: var(--border-dark);
+      --text: var(--text-dark);
+      --muted: var(--muted-dark);
+      --accent: var(--accent-dark);
+      --accent-soft: var(--accent-soft-dark);
+      --add-bg: var(--add-bg-dark);
+      --add-fg: var(--add-fg-dark);
+      --del-bg: var(--del-bg-dark);
+      --del-fg: var(--del-fg-dark);
+      --warn-bg: var(--warn-bg-dark);
+      --warn-fg: var(--warn-fg-dark);
+      --tok-kw: var(--kw-dark);
+      --tok-str: var(--str-dark);
+      --tok-cmt: var(--cmt-dark);
+      --tok-typ: var(--typ-dark);
+      --tok-fn: var(--fn-dark);
+      --tok-num: var(--num-dark);
+      --scroll-thumb: #6e7681;
       --scroll-track: transparent;
-
-      @media (prefers-color-scheme: dark) {{
-        --rail: var(--rail-dark);
-        --bg: var(--bg-dark);
-        --surface: var(--surface-dark);
-        --subtle: var(--subtle-dark);
-        --border: var(--border-dark);
-        --text: var(--text-dark);
-        --muted: var(--muted-dark);
-        --accent: var(--accent-dark);
-        --accent-soft: var(--accent-soft-dark);
-        --add-bg: var(--add-bg-dark);
-        --add-fg: var(--add-fg-dark);
-        --del-bg: var(--del-bg-dark);
-        --del-fg: var(--del-fg-dark);
-        --warn-bg: var(--warn-bg-dark);
-        --warn-fg: var(--warn-fg-dark);
-        --tok-kw: var(--kw-dark);
-        --tok-str: var(--str-dark);
-        --tok-cmt: var(--cmt-dark);
-        --tok-typ: var(--typ-dark);
-        --tok-fn: var(--fn-dark);
-        --tok-num: var(--num-dark);
-        --scroll-thumb: #6e7681;
-      }}
-
-      color-scheme: light dark;
-
-      &:has(> head > meta[name="color-scheme"][content="dark"]) {{
-        color-scheme: dark;
-        --rail: var(--rail-dark);
-        --bg: var(--bg-dark);
-        --surface: var(--surface-dark);
-        --subtle: var(--subtle-dark);
-        --border: var(--border-dark);
-        --text: var(--text-dark);
-        --muted: var(--muted-dark);
-        --accent: var(--accent-dark);
-        --accent-soft: var(--accent-soft-dark);
-        --add-bg: var(--add-bg-dark);
-        --add-fg: var(--add-fg-dark);
-        --del-bg: var(--del-bg-dark);
-        --del-fg: var(--del-fg-dark);
-        --warn-bg: var(--warn-bg-dark);
-        --warn-fg: var(--warn-fg-dark);
-        --tok-kw: var(--kw-dark);
-        --tok-str: var(--str-dark);
-        --tok-cmt: var(--cmt-dark);
-        --tok-typ: var(--typ-dark);
-        --tok-fn: var(--fn-dark);
-        --tok-num: var(--num-dark);
-        --scroll-thumb: #6e7681;
-      }}
-
-      &:has(> head > meta[name="color-scheme"][content="light"]) {{
-        color-scheme: light;
-        --rail: var(--rail-light);
-        --bg: var(--bg-light);
-        --surface: var(--surface-light);
-        --subtle: var(--subtle-light);
-        --border: var(--border-light);
-        --text: var(--text-light);
-        --muted: var(--muted-light);
-        --accent: var(--accent-light);
-        --accent-soft: var(--accent-soft-light);
-        --add-bg: var(--add-bg-light);
-        --add-fg: var(--add-fg-light);
-        --del-bg: var(--del-bg-light);
-        --del-fg: var(--del-fg-light);
-        --warn-bg: var(--warn-bg-light);
-        --warn-fg: var(--warn-fg-light);
-        --tok-kw: var(--kw-light);
-        --tok-str: var(--str-light);
-        --tok-cmt: var(--cmt-light);
-        --tok-typ: var(--typ-light);
-        --tok-fn: var(--fn-light);
-        --tok-num: var(--num-light);
-        --scroll-thumb: #9ca3af;
-      }}
-
-      @supports (color: light-dark(white, black)) {{
-        --rail: light-dark(var(--rail-light), var(--rail-dark));
-        --bg: light-dark(var(--bg-light), var(--bg-dark));
-        --surface: light-dark(var(--surface-light), var(--surface-dark));
-        --subtle: light-dark(var(--subtle-light), var(--subtle-dark));
-        --border: light-dark(var(--border-light), var(--border-dark));
-        --text: light-dark(var(--text-light), var(--text-dark));
-        --muted: light-dark(var(--muted-light), var(--muted-dark));
-        --accent: light-dark(var(--accent-light), var(--accent-dark));
-        --accent-soft: light-dark(var(--accent-soft-light), var(--accent-soft-dark));
-        --add-bg: light-dark(var(--add-bg-light), var(--add-bg-dark));
-        --add-fg: light-dark(var(--add-fg-light), var(--add-fg-dark));
-        --del-bg: light-dark(var(--del-bg-light), var(--del-bg-dark));
-        --del-fg: light-dark(var(--del-fg-light), var(--del-fg-dark));
-        --warn-bg: light-dark(var(--warn-bg-light), var(--warn-bg-dark));
-        --warn-fg: light-dark(var(--warn-fg-light), var(--warn-fg-dark));
-        --tok-kw: light-dark(var(--kw-light), var(--kw-dark));
-        --tok-str: light-dark(var(--str-light), var(--str-dark));
-        --tok-cmt: light-dark(var(--cmt-light), var(--cmt-dark));
-        --tok-typ: light-dark(var(--typ-light), var(--typ-dark));
-        --tok-fn: light-dark(var(--fn-light), var(--fn-dark));
-        --tok-num: light-dark(var(--num-light), var(--num-dark));
-        --scroll-thumb: light-dark(#9ca3af, #6e7681);
-      }}
 
       scrollbar-color: var(--scroll-thumb) var(--scroll-track);
     }}
@@ -4264,15 +4165,27 @@ def build_html_artifact(
       white-space: nowrap;
     }}
 
-    :root:has(> head > meta[name="color-scheme"][content="dark"]) .pr-cta-btn {{
+    .pr-cta-btn {{
       color: #0b0f16;
     }}
 
-    @media (prefers-color-scheme: dark) {{
-      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .pr-cta-btn {{
-        color: #0b0f16;
-      }}
+    .ticket-cta-btn {{
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 0.42rem 0.8rem;
+      font-size: 0.82rem;
+      font-weight: 650;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.32rem;
+      white-space: nowrap;
     }}
+
+    .ticket-cta-btn:hover {{ border-color: var(--accent); color: var(--accent); }}
+    .ticket-cta-kind {{ color: var(--muted); font-weight: 550; }}
 
     .pr-cta-btn:hover {{
       opacity: 0.92;
@@ -4537,14 +4450,8 @@ def build_html_artifact(
       border-color: var(--accent);
     }}
 
-    :root:has(> head > meta[name="color-scheme"][content="dark"]) .scope-trigger-btn.is-filtered .scope-trigger-badge {{
+    .scope-trigger-btn.is-filtered .scope-trigger-badge {{
       color: #0b0f16;
-    }}
-
-    @media (prefers-color-scheme: dark) {{
-      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .scope-trigger-btn.is-filtered .scope-trigger-badge {{
-        color: #0b0f16;
-      }}
     }}
 
     .scope-reset-btn {{
@@ -4754,14 +4661,8 @@ def build_html_artifact(
       flex-shrink: 0;
     }}
 
-    :root:has(> head > meta[name="color-scheme"][content="dark"]) .cb-box {{
+    .cb-box {{
       color: #0b0f16;
-    }}
-
-    @media (prefers-color-scheme: dark) {{
-      :root:not(:has(> head > meta[name="color-scheme"][content="light"])) .cb-box {{
-        color: #0b0f16;
-      }}
     }}
 
     .cb-svg {{ display: none; }}
@@ -5232,7 +5133,7 @@ def build_html_artifact(
     .vis-ext-link {{ color: var(--accent); text-decoration: none; font-weight: 550; }}
     .vis-ext-link:hover {{ text-decoration: underline; }}
 
-    .vis-zoom-btn, .snapshot-toggle-btn {{
+    .snapshot-toggle-btn {{
       appearance: none;
       border: 1px solid var(--border);
       background: var(--surface);
@@ -5244,7 +5145,7 @@ def build_html_artifact(
       cursor: pointer;
     }}
 
-    .vis-zoom-btn:hover, .snapshot-toggle-btn:hover {{
+    .snapshot-toggle-btn:hover {{
       color: var(--text);
       border-color: var(--text);
     }}
@@ -5255,7 +5156,7 @@ def build_html_artifact(
       border-color: var(--accent);
     }}
 
-    /* Screenshots never grow taller than ~70% of the window; Zoom shows the full size. */
+    /* Screenshots never grow taller than ~70% of the window; clicking one shows the full size. */
     .visual-stage-wrap {{ background: var(--subtle); }}
     .visual-stage {{
       position: relative;
@@ -5266,6 +5167,8 @@ def build_html_artifact(
       margin-inline: auto;
     }}
     .visual-stage img {{ display: block; inline-size: 100%; block-size: auto; }}
+    .visual-stage[role="button"] {{ cursor: zoom-in; }}
+    .visual-stage[role="button"]:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
 
     .vis-head-left {{ display: inline-flex; align-items: center; gap: 0.45rem; min-width: 0; }}
     .vis-role-badge {{
@@ -5783,10 +5686,11 @@ def build_html_artifact(
       inline-size: 100cqi;
       max-inline-size: 100cqi;
       display: flex;
-      align-items: flex-start;
-      gap: 0.6rem;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem 0.6rem;
       margin: 0.45rem 0 0.15rem;
-      padding: 0.5rem 0.85rem 0.55rem 0.7rem;
+      padding: 0.35rem 0.85rem 0.35rem 0.7rem;
       border-inline-start: 3px solid var(--accent);
       background: var(--accent-soft);
       color: var(--text);
@@ -5817,8 +5721,29 @@ def build_html_artifact(
       margin-top: 0.1rem;
     }}
 
-    .hl-note-text {{ flex: 1; min-width: 0; max-width: 92ch; }}
+    .hl-note-head {{
+      appearance: none;
+      border: 0;
+      background: none;
+      color: inherit;
+      font: inherit;
+      text-align: start;
+      padding: 0.1rem 0;
+      margin: 0;
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      cursor: pointer;
+    }}
+    .hl-note-head:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }}
     .hl-note-title {{ font-weight: 650; }}
+    .hl-chev {{ color: var(--muted); font-size: 0.72rem; transition: transform 0.15s ease; }}
+    .hl-note-head:hover .hl-chev {{ color: var(--accent); }}
+    .hl-note.is-open .hl-chev {{ transform: rotate(90deg); }}
+    .hl-note-text {{ display: none; flex-basis: 100%; min-width: 0; max-width: 92ch; padding: 0 0 0.25rem 1.9rem; }}
+    .hl-note.is-open .hl-note-text {{ display: block; }}
 
     .hl-note-lines {{
       flex: none;
@@ -5837,9 +5762,7 @@ def build_html_artifact(
     a.hl-note-lines:hover {{ text-decoration: underline; }}
 
     @container (max-width: 520px) {{
-      .hl-note {{ flex-wrap: wrap; row-gap: 0.3rem; }}
-      .hl-note-text {{ flex-basis: calc(100% - 2rem); }}
-      .hl-note-lines {{ margin: 0 0 0 1.9rem; }}
+      .hl-note-text {{ padding-inline-start: 0; }}
     }}
 
     .hunk-card.notes-hidden .hl-note {{ display: none; }}
@@ -6005,8 +5928,7 @@ def build_html_artifact(
     </div>
     <div class="topbar-right">
       {github_panel.render_github_header_html(github_cfg)}
-      <button type="button" id="mode-toggle" class="icon-btn mode-toggle-btn" aria-pressed="false">All steps</button>
-      <button type="button" id="theme-toggle" class="icon-btn" aria-label="Switch color theme">Theme</button>
+      {ticket_topbar_html}
       {pr_topbar_cta}
     </div>
   </header>
@@ -6074,9 +5996,6 @@ def build_html_artifact(
       const topTabs = Array.from(document.querySelectorAll(".arc-tab"));
       const subTabs = Array.from(document.querySelectorAll(".arc-subtab"));
       const chapterBoxes = Array.from(document.querySelectorAll(".arc-chapter"));
-      const modeToggle = document.getElementById("mode-toggle");
-      const themeToggle = document.getElementById("theme-toggle");
-      const metaScheme = document.querySelector('meta[name="color-scheme"]');
       const conceptDialog = document.getElementById("concept-dialog");
       const conceptTitle = document.getElementById("concept-modal-title");
       const conceptBody = document.getElementById("concept-modal-body");
@@ -6143,7 +6062,6 @@ def build_html_artifact(
       let guidedMode = supportsUntilFound;
       let activeIndex = 0;
       let forcedOutsideIndex = -1;
-      let memoryScheme = null;
       const panelEnabled = panels.map(() => true);
 
       function findAdjacentEnabled(fromIdx, dir) {{
@@ -6428,7 +6346,6 @@ def build_html_artifact(
 
       function setGuidedMode(enabled) {{
         guidedMode = enabled;
-        modeToggle.setAttribute("aria-pressed", String(!guidedMode));
         activatePanel(activeIndex, false, forcedOutsideIndex === activeIndex);
       }}
 
@@ -6549,6 +6466,15 @@ def build_html_artifact(
           return;
         }}
 
+        // Code notes show their title; clicking it opens the explanation
+        const noteHead = event.target.closest(".hl-note-head");
+        if (noteHead) {{
+          const note = noteHead.closest(".hl-note");
+          const open = note.classList.toggle("is-open");
+          noteHead.setAttribute("aria-expanded", String(open));
+          return;
+        }}
+
         // Per-card "Hide notes" / "Show notes" toggle for inline code notes
         const notesBtn = event.target.closest("[data-notes-toggle]");
         if (notesBtn) {{
@@ -6655,10 +6581,10 @@ def build_html_artifact(
         }}
 
         // Visual Zoom Modal
-        const zoomBtn = event.target.closest(".vis-zoom-btn");
-        if (zoomBtn && zoomDialog && typeof zoomDialog.showModal === "function") {{
-          const card = zoomBtn.closest(".visual-card");
-          const stage = card && card.querySelector(".visual-stage");
+        const zoomStageEl = event.target.closest(".visual-card .visual-stage");
+        if (zoomStageEl && zoomDialog && typeof zoomDialog.showModal === "function") {{
+          const card = zoomStageEl.closest(".visual-card");
+          const stage = zoomStageEl;
           const cap = card && card.querySelector(".visual-caption");
           if (stage) {{
             zoomStage.replaceChildren(...Array.from(stage.childNodes).map((n) => n.cloneNode(true)));
@@ -6724,57 +6650,16 @@ def build_html_artifact(
         }}
       }}
 
-      modeToggle.addEventListener("click", () => setGuidedMode(!guidedMode));
-
-      function getStoredScheme() {{
-        try {{ return localStorage.getItem("unmaze-color-scheme") || memoryScheme; }}
-        catch (_) {{ return memoryScheme; }}
-      }}
-
-      function setStoredScheme(val) {{
-        memoryScheme = val;
-        try {{
-          if (val === null) localStorage.removeItem("unmaze-color-scheme");
-          else localStorage.setItem("unmaze-color-scheme", val);
-        }} catch (_) {{}}
-      }}
-
-      function syncThemeLabel() {{
-        const stored = getStoredScheme();
-        const sysDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        const isDark = stored ? stored === "dark" : sysDark;
-        themeToggle.textContent = isDark ? "☀" : "☾";
-      }}
-
-      themeToggle.addEventListener("click", () => {{
-        const stored = getStoredScheme();
-        const sysDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        const isDark = stored ? stored === "dark" : sysDark;
-        const target = isDark ? "light" : "dark";
-        if (target === (sysDark ? "dark" : "light")) {{
-          setStoredScheme(null);
-          metaScheme.content = "light dark";
-        }} else {{
-          setStoredScheme(target);
-          metaScheme.content = target;
-        }}
-        syncThemeLabel();
-      }});
-
-      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncThemeLabel);
-      window.addEventListener("storage", (e) => {{
-        if (e.key === "unmaze-color-scheme") {{
-          metaScheme.content = e.newValue || "light dark";
-          syncThemeLabel();
-        }}
-      }});
-      syncThemeLabel();
-
       document.addEventListener("keydown", (event) => {{
         if (event.metaKey || event.ctrlKey || event.altKey) return;
         if ((conceptDialog && conceptDialog.open) || (zoomDialog && zoomDialog.open)) return;
         const tag = (event.target && event.target.tagName) || "";
         if (tag === "INPUT" || tag === "TEXTAREA") return;
+        if ((event.key === "Enter" || event.key === " ") && event.target.matches && event.target.matches(".visual-card .visual-stage")) {{
+          event.preventDefault();
+          event.target.click();
+          return;
+        }}
         if (event.key === "]") {{
           const nxt = findAdjacentEnabled(activeIndex, 1);
           if (nxt !== -1) activatePanel(nxt, true);

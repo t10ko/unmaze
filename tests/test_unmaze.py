@@ -387,6 +387,31 @@ class UnmazeTestSuite(unittest.TestCase):
             self.assertNotIn(".sql", lbl)
             self.assertNotIn("/", lbl)
 
+    def test_top_bar_dark_theme_and_click_to_zoom(self) -> None:
+        manifest = self._build_sample_manifest()
+        validated = build_artifact.validate_and_normalize_plan(
+            manifest, copy.deepcopy(self.sample_plan)
+        )
+        rendered = build_artifact.build_html_artifact(
+            manifest, validated, search_dirs=[REPO_ROOT / "examples"]
+        )
+        topbar = rendered.split('<header class="app-topbar">', 1)[1].split("</header>", 1)[0]
+        # The ticket opens from the top bar, next to the PR button; other links stay in the overview.
+        self.assertIn('class="ticket-cta-btn" href="https://linear.app/acme/issue/PAY-412"', topbar)
+        self.assertLess(topbar.index("ticket-cta-btn"), topbar.index("pr-cta-btn"))
+        overview = rendered.split('class="source-links"', 1)[1].split("</nav>", 1)[0]
+        self.assertNotIn("PAY-412", overview)
+        self.assertIn("Webhook dedup spec", overview)
+        # No "All steps" or theme buttons: the guide is dark only.
+        self.assertNotIn('id="mode-toggle"', rendered)
+        self.assertNotIn('id="theme-toggle"', rendered)
+        self.assertNotIn("unmaze-color-scheme", rendered)
+        self.assertIn('<meta name="color-scheme" content="dark">', rendered)
+        # Screenshots zoom when clicked; there is no separate Zoom button.
+        self.assertNotIn('class="vis-zoom-btn"', rendered)
+        self.assertIn('class="visual-stage" style="--vis-ar:', rendered)
+        self.assertIn('role="button" tabindex="0" aria-label="Zoom', rendered)
+
     def test_inline_code_notes_and_note_quality_checks(self) -> None:
         manifest = self._build_sample_manifest()
         validated = build_artifact.validate_and_normalize_plan(
@@ -407,8 +432,11 @@ class UnmazeTestSuite(unittest.TestCase):
         first_row = step2.rfind('<span class="dl ', 0, step2.index(f'data-hl-id="{uid}"'))
         self.assertLess(first_note, first_row)
         self.assertNotIn('<span class="dl ', step2[first_note:first_row])
-        self.assertIn("Expiry uses this server&#x27;s clock:</strong>", step2)
+        self.assertIn('<strong class="hl-note-title">Expiry uses this server&#x27;s clock</strong>', step2)
         self.assertIn('<span class="hl-num" aria-hidden="true">4</span>', step2)
+        # A note shows its number and title; the explanation opens when the title is clicked.
+        self.assertIn('class="hl-note-head" aria-expanded="false"', step2)
+        self.assertEqual(step2.count('class="hl-note-text" id="hl-body-'), 4)
         # Each card with notes gets a "Hide notes" toggle.
         self.assertIn('data-hide-label="Hide 4 notes" data-show-label="Show 4 notes"', step2)
         md_out = build_artifact.build_markdown_summary(manifest, validated)

@@ -1403,9 +1403,16 @@ GH_JS = r"""
   }
 
   // ---------- events ----------
+  function hideAddButton() {
+    if (addBtn && addBtn.parentNode) addBtn.remove();
+  }
   document.addEventListener("mouseover", (e) => {
     const row = e.target.closest && e.target.closest(".diff-view .dl");
     if (row) showAddButton(row);
+    else if (!(addBtn && document.activeElement === addBtn)) hideAddButton();
+  });
+  document.addEventListener("mouseout", (e) => {
+    if (!e.relatedTarget && !(addBtn && document.activeElement === addBtn)) hideAddButton();
   });
   document.addEventListener("focusin", (e) => {
     const row = e.target.closest && e.target.closest(".diff-view .dl");

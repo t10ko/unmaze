@@ -22,7 +22,7 @@ GitHub and Git sort diffs alphabetically (`a.ts` -> `z.ts`), dumping 30 files at
 - **Arc-style Chapters** (splitting large PRs into ordered chapters—`Chapter 1`, `Chapter 2`—in a clean sidebar),
 - **Top-Bar Role & Area Tree Filter** (2-level `Role Surface -> App Area` filter that dims unrelated chapters and steps so FE, BE, or domain engineers can review just their slice),
 - **Cumulative Timeline File Evolution** (showing each file *as it exists at that step*, slicing large hunks with `H007:1-34,52` so future steps don't leak early),
-- **Inline Code Notes** (a short note sits right above each block a newcomer would have to stop and decode, inside the diff, with its lines tinted and linked to the PR; one "Hide notes" button per file),
+- **Inline Code Notes** (a short note sits right above each block a newcomer would have to stop and decode, inside the diff as a numbered title that opens its explanation on click, with its lines tinted and linked to the PR; one "Hide notes" button per file),
 - **Semantic Concept Modals Everywhere You Encounter Them** (a dedicated 2nd-pass AI sweep explains **both** brand-new terms/things introduced by this task **and** existing repo concepts, semantically linking casual phrases like `[[claimed-lease|frees the lock]]` wherever they're talked about across every step, bullet, table, caption, and diff note),
 - **Mandatory Red-Marked Screenshots — Even on Backend PRs** (traces backend/API/DB changes to the frontend screen they impact and places red circles, boxes, and arrows showing what the code is for), and
 - **100% deterministic changed-line accounting**.

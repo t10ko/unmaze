@@ -260,7 +260,7 @@
 5. **Smart Screenshot Grouping (automatic):**
    - 3+ screenshots in one `visuals[]` block render as a **gallery**: one large image, a captioned thumbnail strip, previous/next buttons and arrow keys. Give each a 2–4 word `"label"` for its thumbnail (falls back to the first red-mark label).
    - `"role": "before"` + `"role": "after"` on two screenshots renders them **side by side**, outside any gallery.
-   - Every screenshot is capped at ~70% of the window height; **Zoom** opens the full size.
+   - Every screenshot is capped at ~70% of the window height; clicking it opens the full size.
 6. **Red-Marked Visual Annotation Coordinates (`0..100` percentages of image width & height):**
    - `{"kind": "circle", "x": 86.2, "y": 42.7, "r": 7.0, "label": "Short label"}` (or `"rx"` & `"ry"` for ellipses)
    - `{"kind": "arrow", "from_x": 60.0, "from_y": 29.0, "to_x": 77.2, "to_y": 41.0, "label": "Short label"}`
@@ -270,4 +270,4 @@
    - Add a note on any block a newcomer would have to stop and decode, whatever its size (non-obvious conditions, ordering, queries, regex, magic numbers, retries/caching/concurrency, swallowed errors, clever one-liners, test setup encoding a rule); skip imports, wiring, renames and self-describing code. There is no minimum and no per-file cap.
    - One idea per note: usually 3–12 lines, a single line is fine, never more than 40 (exit code `2`); notes can't overlap.
    - `explanation`: one sentence, two at most, 12–60 words (exit code `2` outside that), saying what the block does **and** what isn't obvious (why it's written this way, which case it handles, what breaks without it). `title`: the idea in ≤ 8 words.
-   - Rendering: each note sits inside the diff right above its first line, its lines get a tinted edge, hovering either one highlights both, the line badge links to the PR, and each file card has a "Hide notes" toggle. The Markdown summary lists every note under its step.
+   - Rendering: each note sits inside the diff right above its first line as a numbered title that opens its explanation on click, its lines get a tinted edge, hovering either one highlights both, the line badge links to the PR, and each file card has a "Hide notes" toggle. The Markdown summary lists every note under its step.

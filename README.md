@@ -117,7 +117,7 @@ Big PRs were always hard to review. With AI writing the code, they're also bigge
 
 ### 1. A PR overview that answers "what is this and what does it touch?"
 
-The guide opens with the whole task in one casual sentence, the ticket, spec and Figma links, and then a **"This PR"** block: what this PR builds, every service, app or package it touches (with new routes and entry points), and its **ship facts** — schema migrations, backfills, config, feature flags, new dependencies, contract changes and deploy order, with "none" said out loud so reviewers don't have to guess.
+The guide opens with the whole task in one casual sentence, the spec and Figma links (the ticket sits in the top bar, next to the PR button), and then a **"This PR"** block: what this PR builds, every service, app or package it touches (with new routes and entry points), and its **ship facts** — schema migrations, backfills, config, feature flags, new dependencies, contract changes and deploy order, with "none" said out loud so reviewers don't have to guess.
 
 ![unmaze PR overview: what this PR builds, a table of the services it touches, a diagram of how the parts connect, and ship facts such as migrations and deploy order](assets/overview-this-pr.png)
 
@@ -129,7 +129,7 @@ When the hard part of a PR is how several parts call each other, the overview ad
 
 ### 3. Short notes right above the tricky code
 
-Every block a newcomer would have to stop and decode gets a one-sentence note **inside the diff**, right above it: what the block does and why it's written that way. Hover a note to light up its lines (and the other way round). One "Hide notes" button per file when you just want the code.
+Every block a newcomer would have to stop and decode gets a numbered note **inside the diff**, right above it: a short title you click to open one sentence on what the block does and why it's written that way. Hover a note to light up its lines (and the other way round). One "Hide notes" button per file when you just want the code.
 
 ![unmaze inline code notes: numbered explanations above each tricky block of a diff, with hover highlighting and a hide notes button](assets/code-notes.gif)
 
@@ -186,7 +186,7 @@ Once a guide is published, unmaze remembers it for that branch. After each later
 
 ### 12. Calm to read, even on a phone
 
-Fewer, fuller steps (about one per 150 lines of production code, 5–12 in total), roomy text at ~75 characters a line, light and dark themes, and a layout that works on a phone: notes and comments stay readable while the code scrolls sideways.
+Fewer, fuller steps (about one per 150 lines of production code, 5–12 in total), roomy text at ~75 characters a line, a dark theme, and a layout that works on a phone: notes and comments stay readable while the code scrolls sideways.
 
 ![unmaze review guide on a phone: overview, inline code notes and a comment thread on a narrow screen](assets/mobile.png)
 
