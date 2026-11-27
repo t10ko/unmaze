@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Python 3.9+ and git (plus gh CLI when fetching GitHub PRs by number or URL).
 metadata:
   author: t10ko
-  version: "0.12.1"
+  version: "0.14.0"
 ---
 
 # unmaze — Resurrecting Human Code Review in the AI Era
@@ -191,7 +191,7 @@ python3 "<SKILL_DIR>/scripts/build_artifact.py" \
 
 For a GitHub PR, `parse_diff.py` also saves `pr-activity.json` (reviews, approvals, checks and comment threads, via `gh`) next to the manifest, and `build_artifact.py` picks it up on its own; pass `--no-github-activity` to `parse_diff.py` to skip it. When the build prints a `capabilities=` line, keep it for publishing.
 
-**End-to-end results (optional):** when someone ran end-to-end checks on this PR and saved a results file (format: `<SKILL_DIR>/references/e2e-results.md`), add `--e2e-results <path/to/results.json> --asset-urls "$WORK_DIR/asset-urls.json"` to the command. The board gets a "Tested end to end" section, a pill in the Overview and a sidebar entry. Step GIFs are never embedded: a GIF with no URL in `asset-urls.json` yet (a missing file means none) shows a placeholder, and the build prints an `e2e-uploads=` line listing the files to upload in Step 7.
+**End-to-end results (optional):** when someone ran end-to-end checks on this PR and saved a results file (format: `<SKILL_DIR>/references/e2e-results.md`), add `--e2e-results <path/to/results.json> --asset-urls "$WORK_DIR/asset-urls.json"` to the command. The board gets a "Tested end to end" section, a pill in the Overview and a sidebar entry. Step GIFs are never embedded: a GIF with no URL in `asset-urls.json` yet (a missing file means none) shows a placeholder, and the build prints an `e2e-uploads=` line listing the files to upload in Step 7. To look at a board from disk before publishing, `--inline-gifs` embeds the GIFs instead; never publish a board built that way.
 
 If `build_artifact.py` exits with code `2` (unclaimed/overlapping hunk lines, too many steps for the step budget, missing ship facts, a missing diagram decision or an ungrounded/unneeded diagram, missing red-marked screenshots, skipped Sweep 1/Sweep 2, a broken end-to-end results file, or schema error), fix the reported issue and re-run until `✓ Verified 100% diff coverage` succeeds.
 

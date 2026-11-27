@@ -253,6 +253,26 @@ python3 skills/unmaze/scripts/build_artifact.py \
 open .unmaze/demo/unmaze-review.html
 ```
 
+The free-shipping example also has an end-to-end run, so its board shows the "Tested end to end" section with a GIF per step (`--inline-gifs` embeds them for a board opened from disk):
+
+```bash
+python3 skills/unmaze/scripts/parse_diff.py \
+  --patch examples/free-shipping/free-shipping.patch \
+  --context-dir examples/free-shipping/context \
+  --pr-url https://github.com/acme/shop/pull/27 \
+  --out-dir .unmaze/free-shipping
+
+python3 skills/unmaze/scripts/build_artifact.py \
+  --manifest .unmaze/free-shipping/diff-manifest.json \
+  --plan examples/free-shipping/plan.json \
+  --activity examples/free-shipping/activity.json \
+  --assets-dir examples/free-shipping \
+  --e2e-results examples/free-shipping/e2e/results.json --inline-gifs \
+  --out .unmaze/free-shipping/unmaze-review.html
+
+open .unmaze/free-shipping/unmaze-review.html
+```
+
 The screenshots and GIFs in this README are captured from that demo with `node tools/capture-readme-media.mjs <board-url> assets` (headless Chrome, ffmpeg and ImageMagick; no npm packages).
 
 ## Requirements

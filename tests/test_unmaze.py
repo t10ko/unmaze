@@ -6,6 +6,7 @@ Arc chapters, concept modals, visual annotation overlays, and XSS safety.
 from __future__ import annotations
 
 import copy
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -1530,7 +1531,8 @@ class UnmazeTestSuite(unittest.TestCase):
         }
 
     def _e2e_build(self, tmp_path: Path, results: dict | None, *, asset_urls: dict | None = None,
-                   with_pr: bool = True, head_sha: str | None = None, gif: bool = True) -> tuple[subprocess.CompletedProcess, Path]:
+                   with_pr: bool = True, head_sha: str | None = None, gif: bool = True,
+                   inline_gifs: bool = False) -> tuple[subprocess.CompletedProcess, Path]:
         work = tmp_path / "work"
         if not (work / "diff-manifest.json").exists():
             cmd = [sys.executable, str(SCRIPTS_DIR / "parse_diff.py"), "--patch", str(REPO_ROOT / "examples" / "sample-hairball.patch"),
@@ -1559,6 +1561,8 @@ class UnmazeTestSuite(unittest.TestCase):
         if asset_urls is not None:
             (tmp_path / "asset-urls.json").write_text(json.dumps(asset_urls), encoding="utf-8")
             cmd += ["--asset-urls", str(tmp_path / "asset-urls.json")]
+        if inline_gifs:
+            cmd += ["--inline-gifs"]
         return subprocess.run(cmd, capture_output=True, text=True, check=False), work
 
     @staticmethod
@@ -1672,6 +1676,18 @@ class UnmazeTestSuite(unittest.TestCase):
             self.assertEqual(res3.returncode, 0, res3.stderr)
             self.assertNotIn("e2e-uploads=", res3.stdout)
             self.assertNotIn("capabilities=", res3.stdout)
+
+    def test_e2e_inline_gifs_embed_for_a_board_opened_from_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            res, work = self._e2e_build(Path(tmp), self._e2e_results(), with_pr=False, inline_gifs=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            html_out = (work / "review.html").read_text(encoding="utf-8")
+
+        data_uri = "data:image/gif;base64," + base64.b64encode(self.TINY_GIF).decode("ascii")
+        self.assertIn(f'<img src="{data_uri}" loading="lazy"', html_out)
+        self.assertNotIn("GIF appears after upload", html_out)
+        self.assertNotIn("e2e-uploads=", res.stdout, "nothing to upload")
+        self.assertNotIn("capabilities=", res.stdout, "an embedded GIF needs no asset store")
 
     def test_e2e_record_urls_merges_by_sha256(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

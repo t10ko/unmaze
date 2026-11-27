@@ -6883,6 +6883,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="JSON object mapping each step GIF's sha256 to its URL in the Artifact's asset store (a missing file means none yet)",
     )
+    parser.add_argument(
+        "--inline-gifs",
+        action="store_true",
+        help="Embed step GIFs in the page for a board opened from disk (never publish it: the page grows past the asset store)",
+    )
     args = parser.parse_args(argv)
 
     manifest_path = Path(args.manifest)
@@ -6945,7 +6950,9 @@ def main(argv: list[str] | None = None) -> int:
         except e2e_results.E2EResultsError as exc:
             print(f"E2E results error in `{input_path}`:\n{exc}", file=sys.stderr)
             return 2
-        e2e = e2e_results.prepare(results, asset_urls, manifest["meta"].get("head_sha"))
+        e2e = e2e_results.prepare(
+            results, asset_urls, manifest["meta"].get("head_sha"), inline_gifs=args.inline_gifs
+        )
     elif args.asset_urls:
         print("Warning: `--asset-urls` does nothing without `--e2e-results`.", file=sys.stderr)
 

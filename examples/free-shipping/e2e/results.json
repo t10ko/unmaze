@@ -1,0 +1,169 @@
+{
+  "tested_sha": "4f2c9a1d7e3b",
+  "tested_at": "2026-11-27T08:47:22Z",
+  "environment": "Stand-in cart page with the example's pricing, headless Chrome at 1200×720",
+  "summary": "We clicked through the cart like a shopper would: 6 of 6 checks passed, and the checkout check was skipped because the demo has no backend.",
+  "scenarios": [
+    {
+      "id": "S1",
+      "title": "Under $50, the banner says how much is left, and adding an item unlocks free shipping",
+      "why": "If the amount is wrong, shoppers either chase a goal they already hit or pay shipping they shouldn't.",
+      "kind": "browser",
+      "status": "pass",
+      "note": "",
+      "files": [
+        "src/cart/shipping.ts",
+        "src/components/FreeShippingBanner.tsx",
+        "src/cart/totals.ts",
+        "src/pages/CartPage.tsx"
+      ],
+      "steps": [
+        {
+          "action": "Open a cart with a $22.50 tote and a $15.00 mug",
+          "expected": "\"Add $12.50 more to get free shipping.\" and $5.99 shipping",
+          "status": "pass",
+          "gif": "media/S1-step1.gif"
+        },
+        {
+          "action": "Add a second mug with the + button",
+          "expected": "\"You've got free shipping!\", $0.00 shipping, $52.50 total",
+          "status": "pass",
+          "gif": "media/S1-step2.gif"
+        }
+      ]
+    },
+    {
+      "id": "S2",
+      "title": "A cart of exactly $50.00 ships free",
+      "why": "The boundary is where an off-by-one bug would charge shipping on a qualifying order.",
+      "kind": "browser",
+      "status": "pass",
+      "note": "",
+      "files": [
+        "src/cart/shipping.ts",
+        "src/components/FreeShippingBanner.tsx"
+      ],
+      "steps": [
+        {
+          "action": "Open a cart that adds up to exactly $50.00",
+          "expected": "\"You've got free shipping!\" and $0.00 shipping",
+          "status": "pass",
+          "gif": "media/S2-step1.gif"
+        }
+      ]
+    },
+    {
+      "id": "S3",
+      "title": "A coupon that takes the order under $50 brings shipping back",
+      "why": "Free shipping counts what the shopper pays after the coupon, not the list price.",
+      "kind": "browser",
+      "status": "pass",
+      "note": "",
+      "files": [
+        "src/cart/shipping.ts",
+        "src/cart/totals.ts",
+        "src/components/FreeShippingBanner.tsx"
+      ],
+      "steps": [
+        {
+          "action": "Open a $55.00 cart",
+          "expected": "\"You've got free shipping!\"",
+          "status": "pass",
+          "gif": "media/S3-step1.gif"
+        },
+        {
+          "action": "Apply the $10 coupon SAVE10",
+          "expected": "\"Add $5.00 more to get free shipping.\", $5.99 shipping, $50.99 total",
+          "status": "pass",
+          "gif": "media/S3-step2.gif"
+        }
+      ]
+    },
+    {
+      "id": "S4",
+      "title": "Gift cards don't count toward free shipping, and a gift-card-only cart ships nothing",
+      "why": "Gift cards are emailed, so counting them would hand out free shipping on small physical orders.",
+      "kind": "browser",
+      "status": "pass",
+      "note": "",
+      "files": [
+        "src/cart/shipping.ts",
+        "src/cart/totals.ts",
+        "src/components/FreeShippingBanner.tsx"
+      ],
+      "steps": [
+        {
+          "action": "Open a cart with a mug, a notebook and a $25.00 gift card",
+          "expected": "\"Add $22.50 more to get free shipping.\" even though the subtotal is $52.50",
+          "status": "pass",
+          "gif": "media/S4-step1.gif"
+        },
+        {
+          "action": "Remove the mug and the notebook",
+          "expected": "No banner and $0.00 shipping, because nothing ships",
+          "status": "pass",
+          "gif": "media/S4-step2.gif"
+        }
+      ]
+    },
+    {
+      "id": "S5",
+      "title": "Bulky items keep their delivery fee when shipping is free",
+      "why": "Free shipping covers the standard fee only; dropping the bulky fee would lose money on every lamp.",
+      "kind": "browser",
+      "status": "pass",
+      "note": "",
+      "files": [
+        "src/cart/shipping.ts",
+        "src/components/FreeShippingBanner.tsx"
+      ],
+      "steps": [
+        {
+          "action": "Open a cart with a $54.00 floor lamp that has a $15.00 bulky fee",
+          "expected": "\"You've got free shipping! Bulky items still have a delivery fee.\" and $15.00 shipping",
+          "status": "pass",
+          "gif": "media/S5-step1.gif"
+        }
+      ]
+    },
+    {
+      "id": "S6",
+      "title": "Orders outside the US pay international shipping and see no banner",
+      "why": "Free shipping is US-only, so other countries must not be promised it.",
+      "kind": "browser",
+      "status": "pass",
+      "note": "",
+      "files": [
+        "src/cart/shipping.ts",
+        "src/components/FreeShippingBanner.tsx",
+        "src/pages/CartPage.tsx"
+      ],
+      "steps": [
+        {
+          "action": "Switch \"Ship to\" from United States to Canada",
+          "expected": "The banner disappears and shipping is $19.99",
+          "status": "pass",
+          "gif": "media/S6-step1.gif"
+        }
+      ]
+    },
+    {
+      "id": "S7",
+      "title": "Checkout charges the same shipping the cart shows",
+      "kind": "api",
+      "status": "skipped",
+      "why": "If checkout priced shipping on its own, shoppers would see one number and pay another.",
+      "note": "This demo has no checkout backend, so there was no order to place.",
+      "files": [
+        "src/cart/totals.ts"
+      ],
+      "steps": [
+        {
+          "action": "Place an order for the $37.50 cart through the checkout API",
+          "expected": "The order charges $5.99 shipping",
+          "status": "skipped"
+        }
+      ]
+    }
+  ]
+}

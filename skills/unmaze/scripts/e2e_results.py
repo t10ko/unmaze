@@ -16,6 +16,7 @@ URLs into that file, keyed by each file's sha256.
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import hashlib
 import html
@@ -210,8 +211,14 @@ def load_asset_urls(path: Path) -> dict[str, str]:
     }
 
 
-def prepare(results: dict[str, Any], asset_urls: dict[str, str], head_sha: str | None) -> dict[str, Any]:
-    """Order scenarios (failures, skipped, passed), attach uploaded GIF URLs and count the results."""
+def prepare(
+    results: dict[str, Any], asset_urls: dict[str, str], head_sha: str | None, *, inline_gifs: bool = False
+) -> dict[str, Any]:
+    """Order scenarios (failures, skipped, passed), attach uploaded GIF URLs and count the results.
+
+    `inline_gifs` embeds each GIF in the page instead, for a board opened from disk; such a page
+    is never published, since embedded GIFs count toward the 16 MB page limit.
+    """
     model = copy.deepcopy(results)
     model["scenarios"].sort(key=lambda s: _STATUS_ORDER[s["status"]])
     uploads: list[str] = []
@@ -220,6 +227,10 @@ def prepare(results: dict[str, Any], asset_urls: dict[str, str], head_sha: str |
         for st in sc["steps"]:
             gif = st["gif"]
             if not gif:
+                continue
+            if inline_gifs:
+                data = base64.b64encode(Path(gif["path"]).read_bytes()).decode("ascii")
+                gif["url"] = f"data:image/gif;base64,{data}"
                 continue
             has_gif = True
             gif["url"] = asset_urls.get(gif["sha256"])

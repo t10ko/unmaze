@@ -46,3 +46,9 @@ GIFs are never embedded in the board (the page is capped at 16 MB); they live in
 3. Upload the listed files with the `Artifact` tool (`action: "publish"`, `url`, `asset: true`, `file_paths`, up to 25 per call).
 4. Record each returned URL by the file's sha256: `python3 scripts/e2e_results.py record-urls --asset-urls "$WORK_DIR/asset-urls.json" "<file>=<url>" ...` (merges with what's there; only `https://` and `/_blob/` URLs are used).
 5. Rebuild with the same flags and republish to the same URL. An unchanged GIF keeps its URL on every later refresh.
+
+To look at a board from disk, build with `--inline-gifs`: the GIFs are embedded, nothing needs uploading, and the page must not be published.
+
+## Example
+
+`examples/free-shipping/e2e/` holds a full run for the free-shipping example: six browser checks with a GIF per step, and one skipped checkout check. `node examples/free-shipping/e2e/record.mjs` re-runs it in headless Chrome against a stand-in cart page with the example's pricing (`app/cart.html`) and rewrites `results.json` and `media/`.

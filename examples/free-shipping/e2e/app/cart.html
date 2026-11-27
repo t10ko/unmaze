@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your cart · acme.shop</title>
+<!--
+  A static stand-in for the shop's cart page, used only to record the example's end-to-end run
+  (record.mjs). Its pricing copies examples/free-shipping/context/src/cart/shipping.ts and
+  totals.ts, and its banner copies FreeShippingBanner.tsx. Pick a cart with #cart=<name>.
+-->
+<style>
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; color: #1d1d1b; background: #f5f5f3; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 18px 40px; background: #fff; border-bottom: 1px solid #e6e6e2; }
+  .logo { font-weight: 700; font-size: 21px; letter-spacing: -0.01em; }
+  .logo span { color: #2f6b45; }
+  nav { display: flex; gap: 26px; color: #4a4a46; }
+  main { display: grid; grid-template-columns: 1fr 360px; gap: 32px; padding: 30px 40px; max-width: 1200px; }
+  h1 { margin: 0 0 18px; font-size: 32px; letter-spacing: -0.02em; }
+  .banner { margin: 0 0 16px; padding: 16px 20px; border: 1px solid #f0d48a; border-radius: 12px; background: #fff6dc; color: #5d4400; font-weight: 600; }
+  .banner p { margin: 0 0 10px; }
+  .banner__bar { height: 9px; border-radius: 9px; background: #f1e2b4; overflow: hidden; }
+  .banner__fill { height: 100%; background: #d49b00; border-radius: 9px; transition: width .35s ease; }
+  .banner--success { border-color: #a9d8b5; background: #e8f6ec; color: #1f5a33; }
+  .line { display: flex; align-items: center; gap: 18px; margin-bottom: 12px; padding: 14px 18px; background: #fff; border: 1px solid #e6e6e2; border-radius: 12px; }
+  .swatch { width: 72px; height: 72px; border-radius: 10px; flex: none; }
+  .line__info { flex: 1; }
+  .line__name { font-weight: 600; font-size: 18px; }
+  .line__note { color: #6d6d68; font-size: 14px; }
+  .qty { display: inline-flex; align-items: center; gap: 10px; margin-top: 6px; }
+  .qty button, .remove { border: 1px solid #d6d6d0; background: #fff; border-radius: 8px; width: 30px; height: 30px; font-size: 17px; cursor: pointer; }
+  .remove { width: auto; padding: 0 10px; font-size: 13px; color: #8a3b2b; margin-left: 6px; }
+  .line__price { font-weight: 700; font-size: 18px; min-width: 80px; text-align: right; }
+  .summary { align-self: start; padding: 22px 24px; background: #fff; border: 1px solid #e6e6e2; border-radius: 14px; }
+  .summary h2 { margin: 0 0 14px; font-size: 19px; }
+  .row { display: flex; justify-content: space-between; margin: 10px 0; color: #3a3a37; }
+  .row--total { margin-top: 14px; padding-top: 14px; border-top: 1px solid #e6e6e2; font-weight: 700; font-size: 20px; color: #1d1d1b; }
+  .field { display: flex; gap: 8px; margin: 12px 0; }
+  .field label { align-self: center; min-width: 64px; color: #6d6d68; font-size: 14px; }
+  .field select, .field input { flex: 1; height: 36px; padding: 0 10px; border: 1px solid #d6d6d0; border-radius: 8px; font: inherit; font-size: 15px; background: #fff; }
+  .field button { height: 36px; padding: 0 14px; border: 1px solid #1d1d1b; border-radius: 8px; background: #fff; font: inherit; font-size: 14px; cursor: pointer; }
+  .checkout { width: 100%; height: 50px; margin-top: 16px; border: 0; border-radius: 10px; background: #1d1d1b; color: #fff; font: inherit; font-weight: 700; font-size: 17px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">acme<span>.shop</span></div>
+  <nav><span>New in</span><span>Home</span><span>Kitchen</span><span>Stationery</span><span id="cart-count">Cart</span></nav>
+</header>
+<main>
+  <section>
+    <h1>Your cart</h1>
+    <div id="banner"></div>
+    <div id="lines"></div>
+  </section>
+  <aside class="summary">
+    <h2>Order summary</h2>
+    <div class="field"><label for="country">Ship to</label>
+      <select id="country"><option value="US">United States</option><option value="CA">Canada</option></select>
+    </div>
+    <div class="field"><label for="coupon">Coupon</label>
+      <input id="coupon" placeholder="Code" autocomplete="off"><button id="apply">Apply</button>
+    </div>
+    <div class="row"><span>Subtotal</span><span id="subtotal"></span></div>
+    <div class="row" id="discount-row" hidden><span>Coupon</span><span id="discount"></span></div>
+    <div class="row"><span>Shipping</span><span id="shipping"></span></div>
+    <div class="row row--total"><span>Total</span><span id="total"></span></div>
+    <button class="checkout">Check out</button>
+  </aside>
+</main>
+<script>
+  const FREE_SHIPPING_MIN_CENTS = 5000;
+  const STANDARD_SHIPPING_CENTS = 599;
+  const INTERNATIONAL_SHIPPING_CENTS = 1999;
+  const COUPONS = { SAVE10: { amountOffCents: 1000 } };
+
+  const PRODUCTS = {
+    tote: { name: "Canvas tote bag", priceCents: 2250, color: "#dcc8a8" },
+    mug: { name: "Ceramic mug", priceCents: 1500, color: "#9db7c9" },
+    notebook: { name: "Linen notebook", priceCents: 1250, color: "#c9b3d6" },
+    pen: { name: "Brass pen", priceCents: 500, color: "#e2c36b" },
+    giftcard: { name: "Gift card", priceCents: 2500, color: "#f2a7a0", kind: "gift_card" },
+    lamp: { name: "Oak floor lamp", priceCents: 5400, color: "#b9a58c", bulkyFeeCents: 1500 },
+  };
+  const CARTS = {
+    under: { tote: 1, mug: 1 },
+    exact: { tote: 1, mug: 1, notebook: 1 },
+    coupon: { tote: 1, mug: 1, notebook: 1, pen: 1 },
+    giftcard: { mug: 1, notebook: 1, giftcard: 1 },
+    bulky: { lamp: 1 },
+  };
+
+  const cartName = new URLSearchParams(location.hash.slice(1)).get("cart") || "under";
+  const state = {
+    items: Object.entries(CARTS[cartName] || CARTS.under).map(([id, quantity]) => ({ id, quantity, ...PRODUCTS[id] })),
+    coupon: null,
+    country: "US",
+  };
+
+  const money = (cents) => "$" + (cents / 100).toFixed(2);
+  const merchandise = (items) => items.reduce((sum, item) => sum + item.priceCents * item.quantity, 0);
+  const couponDiscount = (items, coupon) => (coupon ? Math.min(coupon.amountOffCents, merchandise(items)) : 0);
+
+  function eligibleSubtotalCents(items, coupon) {
+    const physical = items.filter((item) => item.kind !== "gift_card");
+    return merchandise(physical) - couponDiscount(physical, coupon);
+  }
+
+  function shippingQuote(items, coupon, country) {
+    if (!items.some((item) => item.kind !== "gift_card")) return { kind: "nothing_to_ship" };
+    const bulkyFees = items.reduce((sum, item) => sum + (item.bulkyFeeCents || 0) * item.quantity, 0);
+    if (country !== "US") return { kind: "international", costCents: INTERNATIONAL_SHIPPING_CENTS + bulkyFees };
+    const leftForFreeCents = Math.max(0, FREE_SHIPPING_MIN_CENTS - eligibleSubtotalCents(items, coupon));
+    const base = leftForFreeCents === 0 ? 0 : STANDARD_SHIPPING_CENTS;
+    return { kind: "domestic", costCents: base + bulkyFees, leftForFreeCents };
+  }
+
+  function renderBanner(quote) {
+    const el = document.getElementById("banner");
+    if (quote.kind !== "domestic") { el.innerHTML = ""; return; }
+    if (quote.leftForFreeCents === 0) {
+      el.innerHTML = '<p class="banner banner--success" role="status"></p>';
+      el.firstChild.textContent = "You've got free shipping!" + (quote.costCents > 0 ? " Bulky items still have a delivery fee." : "");
+      return;
+    }
+    const percent = Math.floor(((FREE_SHIPPING_MIN_CENTS - quote.leftForFreeCents) / FREE_SHIPPING_MIN_CENTS) * 100);
+    el.innerHTML =
+      '<div class="banner" role="status"><p></p><div class="banner__bar" role="progressbar" aria-label="Progress to free shipping" ' +
+      'aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + percent + '"><div class="banner__fill" style="width:' + percent + '%"></div></div></div>';
+    el.querySelector("p").textContent = "Add " + money(quote.leftForFreeCents) + " more to get free shipping.";
+  }
+
+  function renderLines() {
+    const lines = document.getElementById("lines");
+    lines.innerHTML = "";
+    for (const item of state.items) {
+      const row = document.createElement("div");
+      row.className = "line";
+      row.dataset.item = item.id;
+      const note = item.kind === "gift_card" ? "Emailed, nothing to ship" : item.bulkyFeeCents ? "Bulky: " + money(item.bulkyFeeCents) + " delivery" : "";
+      row.innerHTML =
+        '<div class="swatch" style="background:' + item.color + '"></div>' +
+        '<div class="line__info"><div class="line__name"></div><div class="line__note"></div>' +
+        '<div class="qty"><button class="minus" aria-label="One less">−</button><span class="count"></span>' +
+        '<button class="plus" aria-label="One more">+</button><button class="remove">Remove</button></div></div>' +
+        '<div class="line__price"></div>';
+      row.querySelector(".line__name").textContent = item.name;
+      row.querySelector(".line__note").textContent = note;
+      row.querySelector(".count").textContent = String(item.quantity);
+      row.querySelector(".line__price").textContent = money(item.priceCents * item.quantity);
+      row.querySelector(".plus").onclick = () => { item.quantity += 1; render(); };
+      row.querySelector(".minus").onclick = () => { item.quantity = Math.max(1, item.quantity - 1); render(); };
+      row.querySelector(".remove").onclick = () => { state.items = state.items.filter((other) => other !== item); render(); };
+      lines.appendChild(row);
+    }
+  }
+
+  function render() {
+    const sub = merchandise(state.items);
+    const discount = couponDiscount(state.items, state.coupon);
+    const quote = shippingQuote(state.items, state.coupon, state.country);
+    const shipping = quote.kind === "nothing_to_ship" ? 0 : quote.costCents;
+    renderBanner(quote);
+    renderLines();
+    document.getElementById("cart-count").textContent = "Cart (" + state.items.reduce((n, item) => n + item.quantity, 0) + ")";
+    document.getElementById("subtotal").textContent = money(sub);
+    document.getElementById("discount-row").hidden = discount === 0;
+    document.getElementById("discount").textContent = "−" + money(discount);
+    document.getElementById("shipping").textContent = money(shipping);
+    document.getElementById("total").textContent = money(sub - discount + shipping);
+  }
+
+  document.getElementById("country").onchange = (event) => { state.country = event.target.value; render(); };
+  document.getElementById("apply").onclick = () => {
+    state.coupon = COUPONS[document.getElementById("coupon").value.trim().toUpperCase()] || null;
+    render();
+  };
+  render();
+</script>
+</body>
+</html>
